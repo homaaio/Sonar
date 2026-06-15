@@ -113,212 +113,8 @@ static const char* const messages[LANG_MAX][50] = {
     }
 };
 
-EXPORT void set_language(int lang) {
-    if (lang >= 0 && lang < LANG_MAX) {
-        current_lang = (Language)lang;
-        log_message("INFO", "Language changed to %d", lang);
-    }
-}
+/* ─── Базовые функции (ДО их использования в scan_security) ─────────────── */
 
-EXPORT int get_language(void) {
-    return (int)current_lang;
-}
-
-EXPORT const char* get_message(int msg_id) {
-    if (msg_id >= 0 && msg_id < 50)
-        return messages[current_lang][msg_id];
-    return "???";
-}
-
-/* ─── Структура для результатов безопасности ───────────────────────────── */
-typedef struct {
-    int is_suspicious;
-    int threat_level;  // 0-10
-    char reasons[10][256];
-    int reason_count;
-} SecurityResult;
-
-/* ─── Анализ безопасности файла ───────────────────────────────────────── */
-static const uint8_t suspicious_signatures[][16] = {
-    {0x4D, 0x5A},                    // MZ (PE executable)
-    {0x7F, 0x45, 0x4C, 0x46},       // ELF
-    {0xCA, 0xFE, 0xBA, 0xBE},       // Mach-O
-    {0x25, 0x50, 0x44, 0x46},       // PDF (может содержать JavaScript)
-    {0x3C, 0x3F, 0x78, 0x6D, 0x6C}, // <?xml (может содержать опасные макросы)
-    {0x1F, 0x8B},                   // GZIP (может содержать скрытые файлы)
-    {0x50, 0x4B, 0x03, 0x04},       // ZIP (может содержать вредоносные макросы)
-};
-
-static const char* signature_names[] = {
-    "Windows Executable (PE)",
-    "Linux Executable (ELF)",
-    "macOS Executable (Mach-O)",
-    "PDF (may contain JavaScript)",
-    "XML (may contain malicious macros)",
-    "GZIP Archive (may contain hidden files)",
-    "ZIP Archive (may contain malicious macros)"
-};
-
-static const uint8_t suspicious_strings[][20] = {
-    "CreateProcess", "WinExec", "ShellExecute", "WriteProcessMemory",
-    "VirtualProtect", "LoadLibrary", "GetProcAddress", "URLDownloadToFile",
-    "cmd.exe", "powershell", "wscript", "cscript", "rundll32",
-    "reg add", "schtasks", "net user", "sc config"
-};
-
-static void check_suspicious_strings(const uint8_t* data, size_t size, SecurityResult* result) {
-    for (int i = 0; i < sizeof(suspicious_strings) / sizeof(suspicious_strings[0]); i++) {
-        const char* pattern = (const char*)suspicious_strings[i];
-        size_t pattern_len = strlen(pattern);
-        
-        for (size_t j = 0; j + pattern_len <= size; j++) {
-            if (memcmp(data + j, pattern, pattern_len) == 0) {
-                snprintf(result->reasons[result->reason_count], 256,
-                        "Found suspicious string: %s", pattern);
-                result->reason_count++;
-                result->is_suspicious = 1;
-                result->threat_level += 3;
-                break;
-            }
-        }
-    }
-}
-
-static void check_byte_patterns(const uint8_t* data, size_t size, SecurityResult* result) {
-    // Проверка на NOP-sled (shellcode pattern)
-    int nop_count = 0;
-    for (size_t i = 0; i + 1 < size; i++) {
-        if (data[i] == 0x90 && data[i+1] == 0x90) {
-            nop_count++;
-            if (nop_count > 10) {
-                snprintf(result->reasons[result->reason_count], 256,
-                        "NOP-sled detected (possible shellcode)");
-                result->reason_count++;
-                result->is_suspicious = 1;
-                result->threat_level += 5;
-                break;
-            }
-        } else {
-            nop_count = 0;
-        }
-    }
-    
-    // Проверка на INT 0x2E (syscall pattern)
-    for (size_t i = 0; i + 1 < size; i++) {
-        if (data[i] == 0xCD && data[i+1] == 0x2E) {
-            snprintf(result->reasons[result->reason_count], 256,
-                    "INT 0x2E syscall detected (possible exploit)");
-            result->reason_count++;
-            result->is_suspicious = 1;
-            result->threat_level += 4;
-            break;
-        }
-    }
-}
-
-/* ─── Основная функция проверки безопасности ──────────────────────────── */
-EXPORT SecurityResult* scan_security(const char* path) {
-    log_message("INFO", "Security scan started: %s", path);
-    
-    SecurityResult* result = (SecurityResult*)malloc(sizeof(SecurityResult));
-    memset(result, 0, sizeof(SecurityResult));
-    result->threat_level = 0;
-    
-    FILE* f = fopen(path, "rb");
-    if (!f) {
-        log_message("ERROR", "Cannot open file: %s", path);
-        result->is_suspicious = -1;
-        return result;
-    }
-    
-    // Читаем первые 64KB для анализа
-    uint8_t buffer[65536];
-    size_t bytes_read = fread(buffer, 1, sizeof(buffer), f);
-    fclose(f);
-    
-    if (bytes_read == 0) {
-        log_message("WARNING", "Empty file: %s", path);
-        result->is_suspicious = 0;
-        return result;
-    }
-    
-    // 1. Проверка сигнатур
-    for (unsigned int i = 0; i < sizeof(suspicious_signatures) / sizeof(suspicious_signatures[0]); i++) {
-        size_t sig_len = 0;
-        for (int j = 0; j < 16 && suspicious_signatures[i][j] != 0; j++) sig_len++;
-        
-        if (memcmp(buffer, suspicious_signatures[i], sig_len) == 0) {
-            snprintf(result->reasons[result->reason_count], 256,
-                    "Suspicious signature: %s", signature_names[i]);
-            result->reason_count++;
-            result->is_suspicious = 1;
-            result->threat_level += (i < 2) ? 8 : 4; // EXE/ELF более опасны
-            log_message("WARNING", "Suspicious signature found in %s", path);
-        }
-    }
-    
-    // 2. Проверка энтропии
-    double entropy = scan_entropy(path);
-    if (entropy > 7.8) {
-        snprintf(result->reasons[result->reason_count], 256,
-                "Extremely high entropy (%.2f) - Strong encryption/packed", entropy);
-        result->reason_count++;
-        result->is_suspicious = 1;
-        result->threat_level += 6;
-        log_message("WARNING", "High entropy detected: %.2f in %s", entropy, path);
-    } else if (entropy > 7.5) {
-        snprintf(result->reasons[result->reason_count], 256,
-                "High entropy (%.2f) - Possible encryption/compression", entropy);
-        result->reason_count++;
-        result->is_suspicious = 1;
-        result->threat_level += 3;
-    }
-    
-    // 3. Проверка нулевых байт
-    double null_ratio = scan_nullratio(path);
-    if (null_ratio > 0.5) {
-        snprintf(result->reasons[result->reason_count], 256,
-                "High zero byte ratio (%.1f%%) - Possible corruption or sparse file",
-                null_ratio * 100);
-        result->reason_count++;
-        result->threat_level += 2;
-    }
-    
-    // 4. Проверка подозрительных строк
-    check_suspicious_strings(buffer, bytes_read, result);
-    
-    // 5. Проверка байтовых паттернов
-    check_byte_patterns(buffer, bytes_read, result);
-    
-    // Ограничиваем уровень угрозы 10
-    if (result->threat_level > 10) result->threat_level = 10;
-    
-    log_message("INFO", "Security scan completed for %s: threat_level=%d", 
-                path, result->threat_level);
-    
-    return result;
-}
-
-EXPORT void free_security_result(SecurityResult* result) {
-    if (result) free(result);
-}
-
-EXPORT int get_threat_level(SecurityResult* result) {
-    return result ? result->threat_level : -1;
-}
-
-EXPORT int get_suspicious_count(SecurityResult* result) {
-    return result ? result->reason_count : 0;
-}
-
-EXPORT const char* get_suspicious_reason(SecurityResult* result, int index) {
-    if (result && index >= 0 && index < result->reason_count) {
-        return result->reasons[index];
-    }
-    return "";
-}
-
-/* ─── Существующие функции (с добавлением логирования) ────────────────── */
 EXPORT double scan_entropy(const char *path) {
     log_message("INFO", "Calculating entropy for: %s", path);
     
@@ -474,6 +270,25 @@ EXPORT int is_text_file(const char *path) {
     return (text_chars * 100 / n) >= 80 ? 1 : 0;
 }
 
+/* ─── Функции многоязычности (после базовых) ───────────────────────────── */
+
+EXPORT void set_language(int lang) {
+    if (lang >= 0 && lang < LANG_MAX) {
+        current_lang = (Language)lang;
+        log_message("INFO", "Language changed to %d", lang);
+    }
+}
+
+EXPORT int get_language(void) {
+    return (int)current_lang;
+}
+
+EXPORT const char* get_message(int msg_id) {
+    if (msg_id >= 0 && msg_id < 50)
+        return messages[current_lang][msg_id];
+    return "???";
+}
+
 EXPORT const char* entropy_description(double entropy) {
     if (entropy > 7.5) return get_message(12);
     if (entropy > 6.0) return get_message(13);
@@ -481,6 +296,280 @@ EXPORT const char* entropy_description(double entropy) {
     return get_message(15);
 }
 
+/* ─── Структура для результатов безопасности ───────────────────────────── */
+typedef struct {
+    int is_suspicious;
+    int threat_level;  // 0-10
+    char reasons[10][256];
+    int reason_count;
+} SecurityResult;
+
+/* ─── Вспомогательные функции безопасности (используют базовые функции) ── */
+static const uint8_t suspicious_signatures[][16] = {
+    {0x4D, 0x5A},                    // MZ (PE executable)
+    {0x7F, 0x45, 0x4C, 0x46},       // ELF
+    {0xCA, 0xFE, 0xBA, 0xBE},       // Mach-O
+    {0x25, 0x50, 0x44, 0x46},       // PDF (может содержать JavaScript)
+    {0x3C, 0x3F, 0x78, 0x6D, 0x6C}, // <?xml (может содержать опасные макросы)
+    {0x1F, 0x8B},                   // GZIP (может содержать скрытые файлы)
+    {0x50, 0x4B, 0x03, 0x04},       // ZIP (может содержать вредоносные макросы)
+};
+
+static const char* signature_names[] = {
+    "Windows Executable (PE)",
+    "Linux Executable (ELF)",
+    "macOS Executable (Mach-O)",
+    "PDF (may contain JavaScript)",
+    "XML (may contain malicious macros)",
+    "GZIP Archive (may contain hidden files)",
+    "ZIP Archive (may contain malicious macros)"
+};
+
+static const uint8_t suspicious_strings[][20] = {
+    "CreateProcess", "WinExec", "ShellExecute", "WriteProcessMemory",
+    "VirtualProtect", "LoadLibrary", "GetProcAddress", "URLDownloadToFile",
+    "cmd.exe", "powershell", "wscript", "cscript", "rundll32",
+    "reg add", "schtasks", "net user", "sc config"
+};
+
+static void check_suspicious_strings(const uint8_t* data, size_t size, SecurityResult* result) {
+    for (int i = 0; i < sizeof(suspicious_strings) / sizeof(suspicious_strings[0]); i++) {
+        const char* pattern = (const char*)suspicious_strings[i];
+        size_t pattern_len = strlen(pattern);
+        
+        for (size_t j = 0; j + pattern_len <= size; j++) {
+            if (memcmp(data + j, pattern, pattern_len) == 0) {
+                snprintf(result->reasons[result->reason_count], 256,
+                        "Found suspicious string: %s", pattern);
+                result->reason_count++;
+                result->is_suspicious = 1;
+                result->threat_level += 3;
+                break;
+            }
+        }
+    }
+}
+
+static void check_byte_patterns(const uint8_t* data, size_t size, SecurityResult* result) {
+    // Проверка на NOP-sled (shellcode pattern)
+    int nop_count = 0;
+    for (size_t i = 0; i + 1 < size; i++) {
+        if (data[i] == 0x90 && data[i+1] == 0x90) {
+            nop_count++;
+            if (nop_count > 10) {
+                snprintf(result->reasons[result->reason_count], 256,
+                        "NOP-sled detected (possible shellcode)");
+                result->reason_count++;
+                result->is_suspicious = 1;
+                result->threat_level += 5;
+                break;
+            }
+        } else {
+            nop_count = 0;
+        }
+    }
+    
+    // Проверка на INT 0x2E (syscall pattern)
+    for (size_t i = 0; i + 1 < size; i++) {
+        if (data[i] == 0xCD && data[i+1] == 0x2E) {
+            snprintf(result->reasons[result->reason_count], 256,
+                    "INT 0x2E syscall detected (possible exploit)");
+            result->reason_count++;
+            result->is_suspicious = 1;
+            result->threat_level += 4;
+            break;
+        }
+    }
+}
+
+/* ─── Основная функция проверки безопасности (после всех зависимостей) ─── */
+EXPORT SecurityResult* scan_security(const char* path) {
+    log_message("INFO", "Security scan started: %s", path);
+    
+    SecurityResult* result = (SecurityResult*)malloc(sizeof(SecurityResult));
+    memset(result, 0, sizeof(SecurityResult));
+    result->threat_level = 0;
+    
+    FILE* f = fopen(path, "rb");
+    if (!f) {
+        log_message("ERROR", "Cannot open file: %s", path);
+        result->is_suspicious = -1;
+        return result;
+    }
+    
+    // Читаем первые 64KB для анализа
+    uint8_t buffer[65536];
+    size_t bytes_read = fread(buffer, 1, sizeof(buffer), f);
+    fclose(f);
+    
+    if (bytes_read == 0) {
+        log_message("WARNING", "Empty file: %s", path);
+        result->is_suspicious = 0;
+        return result;
+    }
+    
+    // 1. Проверка сигнатур
+    for (unsigned int i = 0; i < sizeof(suspicious_signatures) / sizeof(suspicious_signatures[0]); i++) {
+        size_t sig_len = 0;
+        for (int j = 0; j < 16 && suspicious_signatures[i][j] != 0; j++) sig_len++;
+        
+        if (memcmp(buffer, suspicious_signatures[i], sig_len) == 0) {
+            snprintf(result->reasons[result->reason_count], 256,
+                    "Suspicious signature: %s", signature_names[i]);
+            result->reason_count++;
+            result->is_suspicious = 1;
+            result->threat_level += (i < 2) ? 8 : 4; // EXE/ELF более опасны
+            log_message("WARNING", "Suspicious signature found in %s", path);
+        }
+    }
+    
+    // 2. Проверка энтропии (теперь scan_entropy объявлена выше)
+    double entropy = scan_entropy(path);
+    if (entropy > 7.8) {
+        snprintf(result->reasons[result->reason_count], 256,
+                "Extremely high entropy (%.2f) - Strong encryption/packed", entropy);
+        result->reason_count++;
+        result->is_suspicious = 1;
+        result->threat_level += 6;
+        log_message("WARNING", "High entropy detected: %.2f in %s", entropy, path);
+    } else if (entropy > 7.5) {
+        snprintf(result->reasons[result->reason_count], 256,
+                "High entropy (%.2f) - Possible encryption/compression", entropy);
+        result->reason_count++;
+        result->is_suspicious = 1;
+        result->threat_level += 3;
+    }
+    
+    // 3. Проверка нулевых байт (теперь scan_nullratio объявлена выше)
+    double null_ratio = scan_nullratio(path);
+    if (null_ratio > 0.5) {
+        snprintf(result->reasons[result->reason_count], 256,
+                "High zero byte ratio (%.1f%%) - Possible corruption or sparse file",
+                null_ratio * 100);
+        result->reason_count++;
+        result->threat_level += 2;
+    }
+    
+    // 4. Проверка подозрительных строк
+    check_suspicious_strings(buffer, bytes_read, result);
+    
+    // 5. Проверка байтовых паттернов
+    check_byte_patterns(buffer, bytes_read, result);
+    
+    // Ограничиваем уровень угрозы 10
+    if (result->threat_level > 10) result->threat_level = 10;
+    
+    log_message("INFO", "Security scan completed for %s: threat_level=%d", 
+                path, result->threat_level);
+    
+    return result;
+}
+
+EXPORT void free_security_result(SecurityResult* result) {
+    if (result) free(result);
+}
+
+EXPORT int get_threat_level(SecurityResult* result) {
+    return result ? result->threat_level : -1;
+}
+
+EXPORT int get_suspicious_count(SecurityResult* result) {
+    return result ? result->reason_count : 0;
+}
+
+EXPORT const char* get_suspicious_reason(SecurityResult* result, int index) {
+    if (result && index >= 0 && index < result->reason_count) {
+        return result->reasons[index];
+    }
+    return "";
+}
+
+/* ─── Остальные вспомогательные функции ────────────────────────────────── */
+EXPORT int64_t get_file_size(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    fseek(f, 0, SEEK_END);
+    int64_t size = ftell(f);
+    fclose(f);
+    return size;
+}
+
+EXPORT int is_image_file(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    
+    uint8_t header[12];
+    size_t n = fread(header, 1, 12, f);
+    fclose(f);
+    
+    if (n < 4) return 0;
+    
+    static const uint8_t png[] = {0x89, 0x50, 0x4E, 0x47};
+    static const uint8_t jpeg[] = {0xFF, 0xD8, 0xFF};
+    static const uint8_t gif[] = {0x47, 0x49, 0x46};
+    
+    if (memcmp(header, png, 4) == 0) return 1;
+    if (memcmp(header, jpeg, 3) == 0) return 1;
+    if (memcmp(header, gif, 3) == 0) return 1;
+    
+    return 0;
+}
+
+EXPORT int is_archive_file(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    
+    uint8_t header[8];
+    size_t n = fread(header, 1, 8, f);
+    fclose(f);
+    
+    if (n < 4) return 0;
+    
+    static const uint8_t zip[] = {0x50, 0x4B, 0x03, 0x04};
+    static const uint8_t rar[] = {0x52, 0x61, 0x72, 0x21};
+    static const uint8_t gz[] = {0x1F, 0x8B};
+    static const uint8_t xz[] = {0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00};
+    
+    if (memcmp(header, zip, 4) == 0) return 1;
+    if (memcmp(header, rar, 4) == 0) return 1;
+    if (memcmp(header, gz, 2) == 0) return 1;
+    if (n >= 6 && memcmp(header, xz, 6) == 0) return 1;
+    
+    return 0;
+}
+
+EXPORT const char* get_file_type(const char *path, int lang) {
+    set_language(lang);
+    
+    if (is_image_file(path)) return get_message(0); // "Image" на нужном языке
+    if (is_archive_file(path)) return "Archive";
+    if (is_text_file(path)) return "Text";
+    
+    return "Binary";
+}
+
 EXPORT const char* get_core_version(void) {
     return "3.0.0 (Security + Multi-language + Logging)";
+}
+
+/* ─── Функция для форматированного вывода информации о файле ───────────── */
+EXPORT char* file_info_string(const char *path, int lang) {
+    set_language(lang);
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        char *result = malloc(256);
+        snprintf(result, 256, "[%s] %s", 
+                 get_message(2), get_message(3));
+        return result;
+    }
+    
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fclose(f);
+    
+    char *result = malloc(512);
+    const char *status = (size > 0) ? get_message(0) : get_message(2);
+    snprintf(result, 512, "[%s] %s: %ld %s", 
+             status, get_message(4), size, "bytes");
+    return result;
 }
