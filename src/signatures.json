@@ -1,0 +1,179 @@
+{
+  "_meta": {
+    "version": "1.1",
+    "updated": "2025-06-15"
+  },
+  "byte_signatures": [
+    {
+      "name": "EICAR Test Virus",
+      "hex": "5835 4F21 5025 4041 5050 5B34 5C50 5A58",
+      "severity": "info",
+      "type": "test"
+    },
+    {
+      "name": "Metasploit Shellcode x86",
+      "hex": "FC E8 82 00 00 00",
+      "severity": "danger",
+      "type": "shellcode"
+    },
+    {
+      "name": "Metasploit Shellcode x64",
+      "hex": "FC E8 89 00 00 00",
+      "severity": "danger",
+      "type": "shellcode"
+    },
+    {
+      "name": "NOP Sled 16b",
+      "hex": "90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90",
+      "severity": "warn",
+      "type": "shellcode"
+    },
+    {
+      "name": "UPX Packer",
+      "hex": "55 50 58 21",
+      "severity": "warn",
+      "type": "packer"
+    },
+    {
+      "name": "AutoIt Compiled",
+      "hex": "41 55 33 21 45 41 30 36",
+      "severity": "warn",
+      "type": "packer"
+    },
+    {
+      "name": "WannaCry Marker",
+      "hex": "57 61 6E 6E 61 43 72 79",
+      "severity": "danger",
+      "type": "ransomware"
+    },
+    {
+      "name": "PDF /Launch Exploit",
+      "hex": "2F 4C 61 75 6E 63 68",
+      "severity": "danger",
+      "type": "exploit"
+    },
+    {
+      "name": "PDF /JavaScript",
+      "hex": "2F 4A 61 76 61 53 63 72 69 70 74",
+      "severity": "warn",
+      "type": "exploit"
+    },
+    {
+      "name": "PowerShell -enc Payload",
+      "hex": "70 6F 77 65 72 73 68 65 6C 6C 2E 65 78 65 20 2D 65 6E 63",
+      "severity": "danger",
+      "type": "script"
+    },
+    {
+      "name": "VBS WScript.Shell",
+      "hex": "43 72 65 61 74 65 4F 62 6A 65 63 74 28 22 57 53 63 72 69 70 74 2E 53 68 65 6C 6C 22 29",
+      "severity": "danger",
+      "type": "dropper"
+    },
+    {
+      "name": "JS eval/unescape",
+      "hex": "65 76 61 6C 28 75 6E 65 73 63 61 70 65 28",
+      "severity": "warn",
+      "type": "obfuscation"
+    },
+    {
+      "name": "Mirai Botnet",
+      "hex": "4D 49 52 41 49",
+      "severity": "danger",
+      "type": "botnet"
+    },
+    {
+      "name": "Cobalt Strike x64 Stager",
+      "hex": "FC 48 83 E4 F0 E8",
+      "severity": "danger",
+      "type": "rat"
+    },
+    {
+      "name": "Meterpreter Stage",
+      "hex": "FC E8 C0 00 00 00",
+      "severity": "danger",
+      "type": "shellcode"
+    },
+    {
+      "name": "Keylogger GetAsyncKeyState",
+      "hex": "47 65 74 41 73 79 6E 63 4B 65 79 53 74 61 74 65",
+      "severity": "warn",
+      "type": "spyware"
+    },
+    {
+      "name": "ASPack Packer",
+      "hex": "60 E8 00 00 00 00 58 83 E8 05",
+      "severity": "warn",
+      "type": "packer"
+    },
+    {
+      "name": "Bind Shell x86",
+      "hex": "31 C0 31 DB 31 C9 31 D2",
+      "severity": "danger",
+      "type": "shellcode"
+    },
+    {
+      "name": "Sliver C2 Beacon",
+      "hex": "53 6C 69 76 65 72",
+      "severity": "danger",
+      "type": "rat"
+    },
+    {
+      "name": "Themida Packer",
+      "hex": "53 45 43 4F 4E 44 53 45 43",
+      "severity": "warn",
+      "type": "packer"
+    },
+    {
+      "name": "ZIP Bomb Marker",
+      "hex": "50 4B 03 04 14 00 00 00 08 00",
+      "severity": "warn",
+      "type": "bomb"
+    },
+    {
+      "name": "Excel Macro Marker",
+      "hex": "D0 CF 11 E0 A1 B1 1A E1",
+      "severity": "warn",
+      "type": "macro"
+    },
+    {
+      "name": "Reverse TCP Shell",
+      "hex": "6A 66 58 6A 01 5B 31 D2",
+      "severity": "danger",
+      "type": "shellcode"
+    }
+  ],
+  "dangerous_extensions": [
+    ".exe",
+    ".bat",
+    ".cmd",
+    ".com",
+    ".scr",
+    ".pif",
+    ".vbs",
+    ".vbe",
+    ".js",
+    ".jse",
+    ".ps1",
+    ".ps2",
+    ".msi",
+    ".dll",
+    ".sys",
+    ".drv"
+  ],
+  "suspicious_extensions": [
+    ".jar",
+    ".apk",
+    ".sh",
+    ".bash",
+    ".py",
+    ".rb",
+    ".php",
+    ".pl",
+    ".cgi"
+  ],
+  "known_malware_sha256": [
+    "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f",
+    "131f95c51cc819465fa1797f6ccacf9d494aaaff46fa3eac73ae63ffbdfd8267"
+  ]
+}
