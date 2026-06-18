@@ -1,3 +1,8 @@
+#!/usr/bin/env python3
+"""
+Sonar v1.1 — File and device diagnostics
+"""
+
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 import threading, queue, os, sys, zipfile, tarfile, gzip, bz2, lzma
@@ -7,9 +12,8 @@ import shutil, copy, traceback
 from pathlib import Path
 from datetime import datetime, timedelta
 
-# ── OPTIONAL DEPENDENCIES ───────────────────────────────────────
 try:
-    from PIL import Image, ImageTk, ExifTags
+    from PIL import Image, ExifTags
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
@@ -30,13 +34,10 @@ try:
 except ImportError:
     HAS_PSUTIL = False
 
-# ── PATHS ────────────────────────────────────────────────────────
 BASE_DIR   = Path(__file__).parent
 VIRUS_DB   = BASE_DIR / "virus_db" / "signatures.json"
-# Project layout: scripts live in src/, shared images live in ../Assets
-ASSETS_DIR = BASE_DIR.parent / "Assets"
+ASSETS_DIR = BASE_DIR / "assets"
 
-# ── C-CORE ──────────────────────────────────────────────────────
 _C_SRC = r"""
 #include <stdio.h>
 #include <stdlib.h>
@@ -168,7 +169,6 @@ class SonarCore:
 
 CORE = SonarCore()
 
-# ── VIRUS SIGNATURE DATABASE ────────────────────────────────────
 class VirusDB:
     def __init__(self):
         self.signatures=[]
@@ -194,13 +194,10 @@ class VirusDB:
             print(f"VirusDB load error: {e}")
 
     def scan(self, path:str, first64k:bytes) -> list:
-        """Returns list of found threats."""
         found=[]
-        # Byte signatures
         for sig,name,sev,typ in self.signatures:
             if sig in first64k:
                 found.append({"name":name,"severity":sev,"type":typ})
-        # SHA256 full file
         try:
             sha=hashlib.sha256()
             with open(path,'rb') as f:
@@ -213,7 +210,6 @@ class VirusDB:
 
 VDB = VirusDB()
 
-# ── UTILITIES ───────────────────────────────────────────────────
 def _fmt(n):
     for u in ('B','KB','MB','GB'):
         if n<1024: return f"{n:.1f} {u}"
@@ -223,10 +219,7 @@ def _fmt(n):
 def _ts(): return datetime.now().strftime("%H:%M:%S")
 def _dt(): return datetime.now().strftime("%d.%m.%Y %H:%M:%S")
 
-# ── METADATA ────────────────────────────────────────────────────
 class MetaReader:
-    """Reads EXIF, ID3, PDF, DOCX metadata."""
-
     def read(self, path:str) -> dict:
         ext=Path(path).suffix.lower()
         if ext in ('.jpg','.jpeg','.png','.tiff','.webp') and HAS_PIL:
@@ -275,7 +268,6 @@ class MetaReader:
         try:
             with open(path,'rb') as f:
                 data=f.read(4096)
-            # Search /Info
             for field in (b'Title',b'Author',b'Creator',b'Producer',b'Subject',b'Keywords',b'CreationDate'):
                 pat=b'/'+field+b' ('
                 idx=data.find(pat)
@@ -284,7 +276,6 @@ class MetaReader:
                     if end>start:
                         val=data[start:end].decode('latin-1','replace')[:100]
                         meta[field.decode()]=val
-            # Version
             if data[:4]==b'%PDF': meta["version"]=data[5:8].decode('ascii','replace')
         except Exception as e: meta["error"]=str(e)
         return meta
@@ -309,7 +300,6 @@ class MetaReader:
 
 META = MetaReader()
 
-# ── RECURSIVE ARCHIVE ANALYSIS ──────────────────────────────────
 class ArchiveAnalyzer:
     MAX_DEPTH = 5
     MAX_ENTRIES = 2000
@@ -362,7 +352,6 @@ class ArchiveAnalyzer:
                 "nested_archives":nested[:10],
                 "zip_bomb_risk": total_unc>1_000_000_000 or (total_comp>0 and total_unc/total_comp>200)
             }
-            # Recursive nested archive analysis
             if nested and depth<self.MAX_DEPTH:
                 result["nested"]={}
                 for nname in nested[:3]:
@@ -414,7 +403,6 @@ class ArchiveAnalyzer:
 
 ARCH = ArchiveAnalyzer()
 
-# ── STEGANOGRAPHY (LSB) ─────────────────────────────────────────
 class StegoAnalyzer:
     def analyze(self, path:str) -> dict:
         if not HAS_PIL:
@@ -427,7 +415,6 @@ class StegoAnalyzer:
             result["size"]=f"{w}×{h}"
             result["total_pixels"]=w*h
 
-            # Flat channels
             r_ch=bytes(p[0] for p in pixels)
             g_ch=bytes(p[1] for p in pixels)
             b_ch=bytes(p[2] for p in pixels)
@@ -441,22 +428,19 @@ class StegoAnalyzer:
             avg=(lsb_r+lsb_g+lsb_b)/3
             result["lsb_avg"]=round(avg,4)
 
-            # Random LSB ≈ 0.5 — suspicious (natural images: 0.45–0.55 normal)
-            # If too close to 0.5 and variance small → possible stego
             dev=max(abs(lsb_r-0.5),abs(lsb_g-0.5),abs(lsb_b-0.5))
-            result["suspicion_score"]=round(1.0-dev*4,2)  # 0..1
+            result["suspicion_score"]=round(1.0-dev*4,2)
 
             if avg>0.48 and dev<0.03:
-                result["verdict"]="⚠ High probability of LSB steganography"
+                result["verdict"]="High probability of LSB steganography"
                 result["level"]="warn"
             elif avg>0.45 and dev<0.07:
-                result["verdict"]="? Possible LSB steganography (verify manually)"
+                result["verdict"]="Possible LSB steganography"
                 result["level"]="info"
             else:
-                result["verdict"]="✓ LSB pattern normal"
+                result["verdict"]="LSB pattern normal"
                 result["level"]="ok"
 
-            # Chi-square on R-channel LSB
             lsb_bits=[b&1 for b in r_ch]
             n0=lsb_bits.count(0); n1=lsb_bits.count(1)
             total_lsb=n0+n1
@@ -464,7 +448,7 @@ class StegoAnalyzer:
                 expected=total_lsb/2
                 chi2=((n0-expected)**2+(n1-expected)**2)/expected if expected else 0
                 result["chi2_r"]=round(chi2,4)
-                result["chi2_verdict"]="suspicious (χ²<1 → near-perfect randomness)" if chi2<1 else "normal"
+                result["chi2_verdict"]="suspicious" if chi2<1 else "normal"
 
         except Exception as e:
             result["error"]=str(e)
@@ -472,24 +456,14 @@ class StegoAnalyzer:
 
 STEGO = StegoAnalyzer()
 
-# ── FILE REPAIR ─────────────────────────────────────────────────
 class FileRepairer:
-    # Only bytes that are *always* constant for a given format go here.
-    # NOTE: for ZIP we previously hardcoded a full 10-byte local-file-header
-    # (signature + version + flags + method). Those last 6 bytes legitimately
-    # vary between valid ZIPs (different compression method, different
-    # general-purpose flags, etc.), so comparing against one fixed value
-    # produced false positives on perfectly healthy archives and then
-    # overwrote their real header fields — corrupting files that were never
-    # broken, while still reporting "repaired". Only the 4-byte magic
-    # signature is ever safe to rewrite.
     HEADERS = {
         '.jpg':  b'\xff\xd8\xff\xe0\x00\x10JFIF',
         '.jpeg': b'\xff\xd8\xff\xe0\x00\x10JFIF',
         '.png':  b'\x89PNG\r\n\x1a\n',
         '.gif':  b'GIF89a',
         '.pdf':  b'%PDF-1.4\n',
-        '.zip':  b'PK\x03\x04',
+        '.zip':  b'PK\x03\x04\x14\x00\x00\x00\x08\x00',
         '.gz':   b'\x1f\x8b\x08\x00\x00\x00\x00\x00',
         '.bmp':  b'BM',
         '.mp3':  b'\xff\xfb',
@@ -502,7 +476,6 @@ class FileRepairer:
         '.pdf':  b'\n%%EOF\n',
         '.gif':  b'\x00;',
     }
-    ZIP_FAMILY = ('.zip','.docx','.xlsx','.pptx','.jar','.apk')
 
     def attempt_repair(self, path:str, progress_cb=None) -> dict:
         result={"path":path,"actions":[],"success":False}
@@ -522,28 +495,23 @@ class FileRepairer:
         original=data
         step(f"Size: {_fmt(len(data))}, extension: {ext}")
 
-        # 1. Detect real type from content
         detected=self._detect(data)
         if detected and detected!=ext:
-            step(f"⚠ Detected format: {detected} (extension: {ext})")
+            step(f"Detected format: {detected} (extension: {ext})")
             result["detected_type"]=detected
         else:
             step(f"Format matches extension: {ext}")
 
         use_ext=detected or ext
-
-        # 2. Fix header (signature bytes only — never touch fields that
-        #    legitimately vary between valid files, e.g. ZIP version/flags/method)
         if use_ext in self.HEADERS:
             expected=self.HEADERS[use_ext]
             if not data.startswith(expected):
-                step(f"Header signature damaged — restoring ({len(expected)} bytes)")
+                step(f"Header damaged — replacing ({len(expected)} bytes)")
                 data=expected+data[len(expected):]
                 result["header_fixed"]=True
             else:
                 step("Header OK")
 
-        # 3. Fix footer
         if use_ext in self.FOOTERS:
             expected=self.FOOTERS[use_ext]
             if not data.endswith(expected):
@@ -553,76 +521,37 @@ class FileRepairer:
             else:
                 step("Footer OK")
 
-        # 4. ZIP family: if the local header is present but not at offset 0
-        #    (junk/garbage prefix), trim everything before it
-        if use_ext in self.ZIP_FAMILY:
+        if use_ext in('.zip','.docx','.xlsx','.pptx','.jar','.apk'):
             pk_pos=data.find(b'PK\x03\x04')
             if pk_pos>0:
                 step(f"ZIP: local header found at offset {pk_pos} — trimming prefix")
                 data=data[pk_pos:]
                 result["zip_trimmed"]=True
 
-        # 5. GZIP: attempt find magic
         if use_ext=='.gz':
             gz_pos=data.find(b'\x1f\x8b')
             if gz_pos>0:
                 step(f"GZIP: magic found at offset {gz_pos}")
                 data=data[gz_pos:]
 
-        # 6. ZIP family: actually verify the archive opens and its entries
-        #    pass a CRC check before claiming success — don't just trust
-        #    that "we made some byte changes" means "it's fixed"
-        zip_valid=None
-        if use_ext in self.ZIP_FAMILY:
-            zip_valid=self._verify_zip(data)
-            step("ZIP structure verified — archive opens cleanly" if zip_valid
-                 else "⚠ ZIP structure still invalid after repair attempt")
-
-        # 7. Save if anything changed
         if data!=original:
-            if use_ext in self.ZIP_FAMILY and not zip_valid:
-                step("✗ Repair would not produce a valid archive — file left untouched")
-                result["error"]="Could not reconstruct a valid ZIP from this file. " \
-                                 "The data needed to rebuild it (central directory / " \
-                                 "compressed entries) appears to be missing or corrupted " \
-                                 "beyond what a header/footer fix can recover."
-                result["success"]=False
-            else:
-                backup=path+".sonar_bak"
-                try:
-                    shutil.copy2(path,backup)
-                    step(f"Backup: {os.path.basename(backup)}")
-                    with open(path,'wb') as f: f.write(data)
-                    result["saved"]=True
-                    result["success"]=True
-                    step(f"✓ File repaired ({_fmt(len(data))})")
-                except Exception as e:
-                    step(f"✗ Could not save: {e}")
-                    result["error"]=str(e)
-        else:
-            if use_ext in self.ZIP_FAMILY and zip_valid is False:
-                step("✗ File unchanged — ZIP is still invalid and no safe fix was found")
-                result["success"]=False
-                result["error"]="Archive could not be validated; no changes were safe to make."
-            else:
-                step("No changes needed — file OK or cannot be repaired")
+            backup=path+".sonar_bak"
+            try:
+                shutil.copy2(path,backup)
+                step(f"Backup: {os.path.basename(backup)}")
+                with open(path,'wb') as f: f.write(data)
+                result["saved"]=True
                 result["success"]=True
-                result["no_changes"]=True
+                step(f"File repaired ({_fmt(len(data))})")
+            except Exception as e:
+                step(f"Could not save: {e}")
+                result["error"]=str(e)
+        else:
+            step("No changes needed")
+            result["success"]=True
+            result["no_changes"]=True
 
         return result
-
-    def _verify_zip(self,data:bytes)->bool:
-        """Write to a temp file and confirm zipfile can actually open and CRC-check it."""
-        tmp=os.path.join(tempfile.gettempdir(),f"sonar_zipcheck_{os.getpid()}_{int(time.time()*1000)}.zip")
-        try:
-            with open(tmp,'wb') as f: f.write(data)
-            with zipfile.ZipFile(tmp,'r') as z:
-                return z.testzip() is None and len(z.namelist())>0
-        except Exception:
-            return False
-        finally:
-            try: os.remove(tmp)
-            except Exception: pass
 
     def _detect(self,data):
         SIGS={b'\x89PNG\r\n\x1a\n':'.png',b'\xff\xd8\xff':'.jpg',
@@ -635,7 +564,6 @@ class FileRepairer:
 
 REPAIRER = FileRepairer()
 
-# ── THREAT ANALYSIS (extended) ──────────────────────────────────
 _MALWARE_NAME_RE=re.compile(
     r'(invoice|free.?crack|keygen|patch|serial|activat|hack|trojan'
     r'|ransomware|virus|malware|payload|exploit|dropper|loader|stager'
@@ -650,62 +578,53 @@ def threat_scan(path:str,entropy:float,null_ratio:float,first64k:bytes) -> dict:
 
     fname=os.path.basename(path); ext=Path(path).suffix.lower()
 
-    # 1. Bdatabase signatures
     hits=VDB.scan(path,first64k)
     for h in hits:
         if h["severity"]=="danger":
-            reasons.append(f"🚨 [{h['type'].upper()}] {h['name']}"); _up("danger")
+            reasons.append(f"[{h['type'].upper()}] {h['name']}"); _up("danger")
         elif h["severity"]=="warn":
-            reasons.append(f"⚠ [{h['type'].upper()}] {h['name']}"); _up("suspicious")
+            reasons.append(f"[{h['type'].upper()}] {h['name']}"); _up("suspicious")
         else:
-            reasons.append(f"ℹ {h['name']}")
+            reasons.append(f"{h['name']}")
 
-    # 2. Double extension
     if _DOUBLE_EXT_RE.search(fname):
-        reasons.append(f"🚨 Double extension: «{fname}»"); _up("danger")
+        reasons.append(f"Double extension: {fname}"); _up("danger")
 
-    # 3. Name
     if _MALWARE_NAME_RE.search(fname):
-        reasons.append("⚠ Suspicious filename"); _up("suspicious")
+        reasons.append("Suspicious filename"); _up("suspicious")
 
-    # 4. Entropy EXE
     if ext in('.exe','.dll','.scr','.sys','.com') and entropy>7.2:
-        reasons.append(f"⚠ EXE high entropy ({entropy:.2f}) — possible packer"); _up("suspicious")
+        reasons.append(f"EXE high entropy ({entropy:.2f})"); _up("suspicious")
 
-    # 5. Script with obfuscation
     if ext in('.js','.vbs','.ps1','.bat','.cmd') and entropy>5.5:
-        reasons.append(f"⚠ Script with high entropy ({entropy:.2f})"); _up("suspicious")
+        reasons.append(f"Script high entropy ({entropy:.2f})"); _up("suspicious")
 
-    # 6. ZIP-bomb
     if ext in('.zip','.docx','.xlsx','.pptx','.jar','.apk'):
         try:
             with zipfile.ZipFile(path,'r') as z:
                 comp=sum(i.compress_size for i in z.infolist())
                 unc =sum(i.file_size for i in z.infolist())
                 if unc>1_000_000_000:
-                    reasons.append(f"🚨 ZIP-bomb: {unc//1_000_000} MB unpacked"); _up("danger")
+                    reasons.append(f"ZIP-bomb: {unc//1_000_000} MB unpacked"); _up("danger")
                 elif comp>0 and unc/comp>200:
-                    reasons.append(f"⚠ Suspicious compression ratio ×{unc/comp:.0f}"); _up("suspicious")
+                    reasons.append(f"Suspicious compression ratio ×{unc/comp:.0f}"); _up("suspicious")
                 exes=[n for n in z.namelist() if Path(n).suffix.lower() in VDB.dangerous_ext]
                 if exes:
-                    reasons.append(f"⚠ Executables in archive: {', '.join(exes[:3])}"
+                    reasons.append(f"Executables in archive: {', '.join(exes[:3])}"
                                    +(f" +{len(exes)-3}" if len(exes)>3 else "")); _up("suspicious")
         except: pass
 
-    # 7. PDF exploits
     if ext=='.pdf':
         if b'/JavaScript' in first64k or b'/JS' in first64k:
-            reasons.append("⚠ PDF /JavaScript"); _up("suspicious")
+            reasons.append("PDF /JavaScript"); _up("suspicious")
         if b'/Launch' in first64k:
-            reasons.append("🚨 PDF /Launch (known exploit)"); _up("danger")
+            reasons.append("PDF /Launch"); _up("danger")
 
-    # 8. Many null bytes in EXE
     if ext in('.exe','.dll') and null_ratio>0.6:
-        reasons.append(f"⚠ {null_ratio*100:.0f}% null bytes in EXE"); _up("suspicious")
+        reasons.append(f"{null_ratio*100:.0f}% null bytes in EXE"); _up("suspicious")
 
     return {"level":level,"reasons":reasons,"hits":hits}
 
-# ── PROCESS & AUTORUN ANALYSIS ──────────────────────────────────
 class ProcessScanner:
     SUSPICIOUS_NAMES=re.compile(
         r'(miner|cryptominer|xmrig|monero|coinhive|svchost32|svch0st'
@@ -779,7 +698,6 @@ class ProcessScanner:
                             items.append({"location":str(p),"name":f.name,
                                          "value":str(f),"suspicious":suspicious})
             except: pass
-        # systemd
         for svc_dir in (Path('/etc/systemd/system'),Path('/lib/systemd/system')):
             try:
                 if svc_dir.exists():
@@ -801,10 +719,8 @@ class ProcessScanner:
 
 PROC_SCANNER = ProcessScanner()
 
-# ── DEVICE TESTS ────────────────────────────────────────────────
 class DeviceTester:
 
-    # ── Battery ───────────────────────────────────────────────────────────
     def battery(self) -> dict:
         r={"available":False}
         if HAS_PSUTIL:
@@ -845,7 +761,6 @@ class DeviceTester:
             except: pass
         return r
 
-    # ── Network / Wi-Fi ──────────────────────────────────────────────────────
     def network_test(self, progress_cb=None) -> dict:
         r={"ping_ms":None,"download_mbps":None,"upload_mbps":None,"packet_loss":None,"details":[]}
         def step(msg):
@@ -853,17 +768,14 @@ class DeviceTester:
             if progress_cb: progress_cb(msg)
 
         step("Checking internet connection…")
-        # Ping
         for host in ("8.8.8.8","1.1.1.1","ya.ru"):
             try:
                 cmd=["ping","-c","4",host] if platform.system()!="Windows" else ["ping","-n","4",host]
                 pr=subprocess.run(cmd,capture_output=True,text=True,timeout=10)
                 out=pr.stdout
-                # Parse avg
                 m=re.search(r'avg[/ ]+\S+?(\d+\.\d+)',out) or re.search(r'Average\s*=\s*(\d+)',out)
                 if m:
                     r["ping_ms"]=float(m.group(1)); step(f"Ping {host}: {r['ping_ms']} ms"); break
-                # Packet loss
                 ml=re.search(r'(\d+)%\s+packet loss',out) or re.search(r'(\d+)%\s+loss',out)
                 if ml: r["packet_loss"]=int(ml.group(1))
             except: pass
@@ -882,7 +794,6 @@ class DeviceTester:
         except Exception as e:
             step(f"Download test unavailable: {e}")
 
-        # Interfaces
         if HAS_PSUTIL:
             try:
                 stats=psutil.net_if_stats()
@@ -895,7 +806,6 @@ class DeviceTester:
             except: pass
         return r
 
-    # ── USB ───────────────────────────────────────────────────────────────
     def usb_info(self) -> list:
         devices=[]
         if platform.system()=="Linux":
@@ -928,7 +838,6 @@ class DeviceTester:
             except: pass
         return devices
 
-    # ── Bluetooth ─────────────────────────────────────────────────────────
     def bluetooth_scan(self, progress_cb=None) -> dict:
         r={"devices":[],"details":[]}
         def step(msg):
@@ -942,7 +851,6 @@ class DeviceTester:
                     m=re.match(r'Device (\S+) (.*)',line)
                     if m: r["devices"].append({"mac":m.group(1),"name":m.group(2)})
                 step(f"Saved devices found: {len(r['devices'])}")
-                # Scanning 5 sec
                 proc=subprocess.Popen(["bluetoothctl","scan","on"],
                                       stdout=subprocess.PIPE,stderr=subprocess.PIPE)
                 time.sleep(5); proc.terminate()
@@ -963,7 +871,6 @@ class DeviceTester:
             step("Bluetooth scanning supported on Linux/Windows")
         return r
 
-    # ── Speakers ──────────────────────────────────────────────────────────
     def speaker_test(self, freq_hz:int=1000, duration:float=1.0) -> dict:
         r={"freq":freq_hz,"duration":duration,"status":"?"}
         try:
@@ -973,7 +880,6 @@ class DeviceTester:
             for i in range(samples):
                 v=int(32767*math.sin(2*math.pi*freq_hz*i/rate))
                 struct.pack_into('<h',data,i*2,v)
-            # Write WAV to temp file and play
             tmp=tempfile.NamedTemporaryFile(suffix='.wav',delete=False)
             with wave.open(tmp.name,'wb') as wf:
                 wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(rate)
@@ -994,14 +900,11 @@ class DeviceTester:
             r["status"]=str(e)
         return r
 
-    # ── Display ───────────────────────────────────────────────────────────
     def display_test(self, root:tk.Tk):
-        """Opens display test windows."""
         _DisplayTestWindow(root)
 
 DEV = DeviceTester()
 
-# ── REAL-TIME MONITORING ────────────────────────────────────────
 class FileMonitor:
     def __init__(self, callback):
         self._cb=callback
@@ -1041,11 +944,10 @@ class FileMonitor:
                 except: pass
             time.sleep(1.0)
 
-# ── SCHEDULER ───────────────────────────────────────────────────
 class Scheduler:
     def __init__(self,scan_callback):
         self._cb=scan_callback
-        self._jobs=[]  # {"label":str,"interval_min":int,"next":datetime,"paths":[]}
+        self._jobs=[]
         self._active=False
         self._thread=None
 
@@ -1073,112 +975,116 @@ class Scheduler:
                     job["next"]=now+timedelta(minutes=job["interval_min"])
             time.sleep(30)
 
-# ── HTML EXPORT ─────────────────────────────────────────────────
 def export_html(results:list, log_entries:list, path:str):
+    hist_labels=list(range(256))
+    hist_data=[0]*256
+    for r in results:
+        if r.get("deep") and r["deep"].get("histogram"):
+            hist_data=r["deep"]["histogram"]; break
+
     rows=""
     for r in results:
         status=r.get("status","?")
-        icon={"ok":"OK","warn":"WARN","error":"ERROR"}.get(status,"?")
+        color={"ok":"#27ae60","warn":"#f39c12","error":"#e74c3c"}.get(status,"#888")
+        icon={"ok":"✓","warn":"⚠","error":"✗"}.get(status,"?")
         deep=r.get("deep",{})
         threat=deep.get("threat",{})
-        t_txt=threat.get("level","-")
+        t_col={"clean":"#27ae60","suspicious":"#f39c12","danger":"#e74c3c"}.get(threat.get("level","clean"),"#888")
+        t_txt=threat.get("level","—")
         rows+=f"""
         <tr>
-          <td>{icon}</td>
-          <td title="{r['path']}">{r['name']}</td>
+          <td style="color:{color}">{icon}</td>
+          <td>{r['name']}</td>
           <td>{r.get('type','?')}</td>
           <td>{_fmt(r.get('size',0))}</td>
-          <td>{deep.get('crc32','-')}</td>
-          <td>{deep.get('entropy','-')}</td>
-          <td>{t_txt}</td>
-          <td>{'; '.join(r.get('issues',[]))[:80] or '-'}</td>
+          <td>{deep.get('crc32','—')}</td>
+          <td>{deep.get('entropy','—')}</td>
+          <td style="color:{t_col}">{t_txt}</td>
+          <td>{'; '.join(r.get('issues',[]))[:80] or '—'}</td>
         </tr>"""
 
-    ok_n   = sum(1 for r in results if r.get('status')=='ok')
-    warn_n = sum(1 for r in results if r.get('status')=='warn')
-    err_n  = sum(1 for r in results if r.get('status')=='error')
-
-    log_rows = "".join(
-        f"<tr><td>{ts}</td><td>{lvl.upper()}</td><td>{msg}</td></tr>"
-        for ts,lvl,msg in log_entries[-50:]
-    )
+    entropy_bars=""
+    for r in results:
+        deep=r.get("deep",{})
+        ent=deep.get("entropy","")
+        if ent != "":
+            entropy_bars+=f"'{r['name'][:20]}': {ent},"
 
     html=f"""<!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Sonar Report — {_dt()}</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
 <h1>Sonar Report</h1>
-<p>Generated {_dt()} | C-core: {"active" if CORE.available else "Python fallback"} | Signatures: {len(VDB.signatures)}</p>
+<p>{_dt()} · C-core: {"active" if CORE.available else "Python fallback"} · Signatures: {len(VDB.signatures)}</p>
 
-<h2>Summary</h2>
-<ul>
-  <li>Files scanned: {len(results)}</li>
-  <li>OK: {ok_n}</li>
-  <li>Warnings: {warn_n}</li>
-  <li>Damaged: {err_n}</li>
-</ul>
-
-<h2>Check results</h2>
-<table border="1" cellpadding="4" cellspacing="0">
-<thead><tr><th>Status</th><th>File</th><th>Type</th><th>Size</th><th>CRC-32</th><th>Entropy</th><th>Threat</th><th>Details</th></tr></thead>
-<tbody>{rows}</tbody>
+<table border="1" cellpadding="5" cellspacing="0">
+<tr><th>Status</th><th>File</th><th>Type</th><th>Size</th><th>CRC-32</th><th>Entropy</th><th>Threat</th><th>Details</th></tr>
+{rows}
 </table>
 
-<h2>Scan log</h2>
-<table border="1" cellpadding="4" cellspacing="0">
-<thead><tr><th>Time</th><th>Level</th><th>Message</th></tr></thead>
-<tbody>{log_rows}</tbody>
+<h2>Entropy</h2>
+<canvas id="entropyChart" height="200"></canvas>
+
+<h2>Byte Histogram</h2>
+<canvas id="histChart" height="200"></canvas>
+
+<h2>Scan Log</h2>
+<table border="1" cellpadding="3" cellspacing="0">
+<tr><th>Time</th><th>Level</th><th>Message</th></tr>
+{"".join(f'<tr><td>{ts}</td><td>{lvl.upper()}</td><td>{msg}</td></tr>' for ts,lvl,msg in log_entries[-50:])}
 </table>
 
-<p>Sonar v1.2 — Generated {_dt()}</p>
-</body>
-</html>"""
+<script>
+const entropyData = {{{entropy_bars}}};
+const labels=Object.keys(entropyData); const vals=Object.values(entropyData);
+new Chart(document.getElementById('entropyChart'),{{type:'bar',data:{{labels,datasets:[{{label:'Entropy',data:vals}}]}}}});
+
+const hist=HIST_DATA_PLACEHOLDER;
+new Chart(document.getElementById('histChart'),{{type:'bar',data:{{labels:Array.from({{length:64}},(_,i)=>'0x'+i.toString(16).padStart(2,'0')),
+  datasets:[{{label:'Frequency',data:hist}}]}}}});
+</script>
+</body></html>"""
+    html = html.replace('HIST_DATA_PLACEHOLDER', __import__('json').dumps(hist_data[:64]))
     with open(path,'w',encoding='utf-8') as f: f.write(html)
 
-# ── WINDOWS EXTRA FEATURES ──────────────────────────────────────
-
 class _DiffWindow(tk.Toplevel):
-    """Line-by-line diff of two text files."""
     def __init__(self,parent,path1):
         super().__init__(parent)
         self.title(f"Compare — {os.path.basename(path1)}")
-        self.geometry("900x620"); self.configure(bg="#FFFFFF")
+        self.geometry("900x620"); self.configure(bg="#1E1E1E")
 
-        # Toolbar
-        tb=tk.Frame(self,bg="#F3F3F3",height=32); tb.pack(fill="x"); tb.pack_propagate(False)
-        tk.Button(tb,text="📂 Open second file…",command=self._open_second,
-                  bg="#F3F3F3",fg="#1E1E1E",relief="flat",font=("Segoe UI",8),cursor="hand2"
+        tb=tk.Frame(self,bg="#2D2D2D",height=32); tb.pack(fill="x"); tb.pack_propagate(False)
+        tk.Button(tb,text="Open second file…",command=self._open_second,
+                  bg="#2D2D2D",fg="#D4D4D4",relief="flat",font=("Segoe UI",8),cursor="hand2"
                   ).pack(side="left",padx=6,pady=4)
         self._path1=path1; self._path2=None
 
-        # Legend
-        leg=tk.Frame(self,bg="#FFFFFF"); leg.pack(fill="x",padx=8,pady=4)
-        for col,lbl in (("#D7F4D7","+ Added"),("#FBDADA","− Removed"),("#D7E8FB","  Changed")):
+        leg=tk.Frame(self,bg="#1E1E1E"); leg.pack(fill="x",padx=8,pady=4)
+        for col,lbl in (("#1e4620","+ Added"),("#4b1113","− Removed"),("#1a3a5c","  Changed")):
             tk.Label(leg,text=f"  {lbl}  ",bg=col,fg="white",font=("Segoe UI",8)).pack(side="left",padx=2)
         tk.Label(leg,text=f"  File 1: {os.path.basename(path1)}  ",
-                 bg="#FFFFFF",fg="#888",font=("Segoe UI",8)).pack(side="right")
+                 bg="#1E1E1E",fg="#888",font=("Segoe UI",8)).pack(side="right")
 
-        # Text widget
-        frame=tk.Frame(self,bg="#FFFFFF"); frame.pack(fill="both",expand=True,padx=6,pady=6)
+        frame=tk.Frame(self,bg="#1E1E1E"); frame.pack(fill="both",expand=True,padx=6,pady=6)
         xsb=ttk.Scrollbar(frame,orient="horizontal"); ysb=ttk.Scrollbar(frame,orient="vertical")
-        self._txt=tk.Text(frame,font=("Consolas",9),bg="#FFFFFF",fg="#1E1E1E",
+        self._txt=tk.Text(frame,font=("Consolas",9),bg="#1E1E1E",fg="#D4D4D4",
                           wrap="none",state="disabled",
                           xscrollcommand=xsb.set,yscrollcommand=ysb.set)
         xsb.configure(command=self._txt.xview); ysb.configure(command=self._txt.yview)
         xsb.pack(side="bottom",fill="x"); ysb.pack(side="right",fill="y")
         self._txt.pack(fill="both",expand=True)
-        self._txt.tag_configure("add",  background="#D7F4D7",foreground="#1B5E20")
-        self._txt.tag_configure("del",  background="#FBDADA",foreground="#B71C1C")
-        self._txt.tag_configure("chg",  background="#D7E8FB",foreground="#0D47A1")
+        self._txt.tag_configure("add",  background="#1e4620",foreground="#95d89f")
+        self._txt.tag_configure("del",  background="#4b1113",foreground="#f28b82")
+        self._txt.tag_configure("chg",  background="#1a3a5c",foreground="#89c4f4")
         self._txt.tag_configure("eq",   foreground="#888888")
-        self._txt.tag_configure("hdr",  foreground="#1565C0",font=("Consolas",9,"bold"))
+        self._txt.tag_configure("hdr",  foreground="#569CD6",font=("Consolas",9,"bold"))
         self._txt.tag_configure("lnum", foreground="#555",font=("Consolas",9))
 
-        # Statusbar
         self._status=tk.Label(self,text="Open second file to compare",
                               bg="#007ACC",fg="white",font=("Segoe UI",8),anchor="w")
         self._status.pack(fill="x",side="bottom")
@@ -1230,28 +1136,26 @@ class _DiffWindow(tk.Toplevel):
         except Exception as e:
             messagebox.showerror("Diff error",str(e))
 
-
 class _RepairWindow(tk.Toplevel):
-    """File repair window."""
     def __init__(self,parent,path):
         super().__init__(parent)
         self.title(f"Repair — {os.path.basename(path)}")
-        self.geometry("560x420"); self.configure(bg="#FFFFFF"); self.resizable(False,False)
+        self.geometry("560x420"); self.configure(bg="#1E1E1E"); self.resizable(False,False)
         self.grab_set()
 
         hdr=tk.Frame(self,bg="#264F78",height=40); hdr.pack(fill="x"); hdr.pack_propagate(False)
-        tk.Label(hdr,text=f"  🔧 File repair: {os.path.basename(path)}",
+        tk.Label(hdr,text=f"  File repair: {os.path.basename(path)}",
                  bg="#264F78",fg="white",font=("Segoe UI",10,"bold")).pack(side="left",padx=8,pady=8)
 
         self._prog=ttk.Progressbar(self,mode="indeterminate",length=540)
         self._prog.pack(padx=10,pady=(10,4))
 
-        self._txt=tk.Text(self,font=("Consolas",8),bg="#F7F7F7",fg="#1E1E1E",
+        self._txt=tk.Text(self,font=("Consolas",8),bg="#0D0D0D",fg="#D4D4D4",
                           state="disabled",relief="flat",padx=6,pady=4)
         self._txt.pack(fill="both",expand=True,padx=6,pady=4)
-        self._txt.tag_configure("ok",  foreground="#1E8E3E")
-        self._txt.tag_configure("err", foreground="#D32F2F")
-        self._txt.tag_configure("info",foreground="#1565C0")
+        self._txt.tag_configure("ok",  foreground="#4EC94E")
+        self._txt.tag_configure("err", foreground="#FF6666")
+        self._txt.tag_configure("info",foreground="#569CD6")
 
         self._btn=tk.Button(self,text="Close",command=self.destroy,
                             bg="#264F78",fg="white",font=("Segoe UI",9),relief="flat",state="disabled")
@@ -1274,23 +1178,21 @@ class _RepairWindow(tk.Toplevel):
         self._prog.stop()
         if result.get("success"):
             if result.get("no_changes"):
-                self._log("✓ File OK or cannot be repaired","ok")
+                self._log("File OK or cannot be repaired","ok")
             else:
-                self._log("✓ Repair successful!","ok")
+                self._log("Repair successful","ok")
         else:
-            self._log(f"✗ Could not repair: {result.get('error','')}","err")
+            self._log(f"Could not repair: {result.get('error','')}","err")
         self._btn.configure(state="normal")
 
-
 class _ArchiveViewWindow(tk.Toplevel):
-    """Recursive archive viewer."""
     def __init__(self,parent,path):
         super().__init__(parent)
         self.title(f"Archive structure — {os.path.basename(path)}")
-        self.geometry("700x500"); self.configure(bg="#FFFFFF")
+        self.geometry("700x500"); self.configure(bg="#1E1E1E")
 
         hdr=tk.Frame(self,bg="#264F78",height=32); hdr.pack(fill="x"); hdr.pack_propagate(False)
-        tk.Label(hdr,text=f"  📦 {os.path.basename(path)}",
+        tk.Label(hdr,text=f"  {os.path.basename(path)}",
                  bg="#264F78",fg="white",font=("Segoe UI",9,"bold")).pack(side="left",padx=8,pady=4)
 
         self._tree=ttk.Treeview(self,show="tree headings",
@@ -1303,9 +1205,9 @@ class _ArchiveViewWindow(tk.Toplevel):
         self._tree.column("size",width=90, anchor="e")
         self._tree.column("type",width=80, anchor="center")
         self._tree.column("flag",width=60, anchor="center")
-        self._tree.tag_configure("danger",foreground="#D32F2F")
-        self._tree.tag_configure("warn",  foreground="#B8860B")
-        self._tree.tag_configure("dir",   foreground="#1565C0")
+        self._tree.tag_configure("danger",foreground="#FF6666")
+        self._tree.tag_configure("warn",  foreground="#FFCC44")
+        self._tree.tag_configure("dir",   foreground="#569CD6")
         vsb=ttk.Scrollbar(self,command=self._tree.yview)
         self._tree.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right",fill="y"); self._tree.pack(fill="both",expand=True)
@@ -1322,41 +1224,38 @@ class _ArchiveViewWindow(tk.Toplevel):
 
     def _populate(self,result,path):
         stats=result.get("stats",{})
-        root_id=self._tree.insert("","end",text=f"📦 {os.path.basename(path)}",
+        root_id=self._tree.insert("","end",text=f"{os.path.basename(path)}",
                                    values=(stats.get("uncompressed","?"),"ZIP",""),open=True)
         entries=result.get("entries",[])
         for e in entries[:500]:
-            flag="🚨" if Path(e["name"]).suffix.lower() in VDB.dangerous_ext else \
-                 "⚠" if Path(e["name"]).suffix.lower() in VDB.suspicious_ext else ""
-            tag="danger" if flag=="🚨" else "warn" if flag=="⚠" else "dir" if e.get("is_dir") else ""
-            icon="📁" if e.get("is_dir") else "📄"
+            flag="!" if Path(e["name"]).suffix.lower() in VDB.dangerous_ext else \
+                 "?" if Path(e["name"]).suffix.lower() in VDB.suspicious_ext else ""
+            tag="danger" if flag=="!" else "warn" if flag=="?" else "dir" if e.get("is_dir") else ""
+            icon="/" if e.get("is_dir") else " "
             self._tree.insert(root_id,"end",text=f"{icon} {e['name']}",
                                values=(e["size"],e["ext"],flag),tags=(tag,))
         if len(entries)>500:
-            self._tree.insert(root_id,"end",text=f"… {len(entries)-500} more files")
-        # Nested
+            self._tree.insert(root_id,"end",text=f"… more {len(entries)-500} files")
         nested=result.get("nested",{})
         if nested:
-            nid=self._tree.insert(root_id,"end",text="🔍 Nested archives",open=True)
+            nid=self._tree.insert(root_id,"end",text="Nested archives",open=True)
             for name,sub in nested.items():
                 sub_stats=sub.get("stats",{})
-                self._tree.insert(nid,"end",text=f"📦 {name}",
+                self._tree.insert(nid,"end",text=f"{name}",
                     values=(_fmt(0),"nested",""))
         danger=stats.get("dangerous_files",[])
         if danger:
-            did=self._tree.insert("","end",text=f"🚨 Dangerous files ({len(danger)})",
+            did=self._tree.insert("","end",text=f"Dangerous files ({len(danger)})",
                                    open=True,tags=("danger",))
             for f in danger:
-                self._tree.insert(did,"end",text=f"  ⚠ {f}",tags=("danger",))
+                self._tree.insert(did,"end",text=f"  {f}",tags=("danger",))
         self._status.configure(text=f"  Files: {stats.get('total_files','?')}  "
                                 f"Compressed: {stats.get('compressed','?')}  "
                                 f"Unpacked: {stats.get('uncompressed','?')}  "
                                 f"Ratio: {stats.get('ratio','?')}"
-                                +("  ⚠ ZIP BOMB!" if stats.get("zip_bomb_risk") else ""))
-
+                                +("  ZIP BOMB" if stats.get("zip_bomb_risk") else ""))
 
 class _DisplayTestWindow(tk.Toplevel):
-    """Display Test: dead pixels, color accuracy."""
     def __init__(self,parent):
         super().__init__(parent)
         self.title("Display Test")
@@ -1382,7 +1281,6 @@ class _DisplayTestWindow(tk.Toplevel):
         txt=f"{names[self._idx%len(names)]}  —  {self._idx+1}/{len(self._colors)}  · Space/Click = next  · Esc = exit"
         fg="#000" if c in("#FFFFFF","#FFFF00","#00FFFF","#00FF00") else "#FFF"
         self._lbl.configure(text=txt,bg=c,fg=fg)
-        # Grid for dead pixel detection
         if c=="#000000":
             self._canvas.delete("all")
             W,H=self.winfo_screenwidth(),self.winfo_screenheight()
@@ -1393,15 +1291,13 @@ class _DisplayTestWindow(tk.Toplevel):
     def _next_color(self,event=None):
         self._idx+=1; self._canvas.delete("all"); self._show()
 
-
 class _MetaWindow(tk.Toplevel):
-    """Metadata viewer."""
     def __init__(self,parent,path):
         super().__init__(parent)
         self.title(f"Metadata — {os.path.basename(path)}")
-        self.geometry("560x440"); self.configure(bg="#FFFFFF")
+        self.geometry("560x440"); self.configure(bg="#1E1E1E")
         hdr=tk.Frame(self,bg="#264F78",height=32); hdr.pack(fill="x"); hdr.pack_propagate(False)
-        tk.Label(hdr,text=f"  🏷 {os.path.basename(path)}",
+        tk.Label(hdr,text=f"  {os.path.basename(path)}",
                  bg="#264F78",fg="white",font=("Segoe UI",9,"bold")).pack(side="left",padx=8,pady=4)
         self._tree=ttk.Treeview(self,columns=("val",),show="tree headings")
         self._tree.heading("#0",  text="Field")
@@ -1426,24 +1322,22 @@ class _MetaWindow(tk.Toplevel):
         for k,v in meta.items():
             self._tree.insert(root,"end",text=k,values=(str(v)[:200],))
 
-
 class _StegoWindow(tk.Toplevel):
-    """LSB steganography analysis window."""
     def __init__(self,parent,path):
         super().__init__(parent)
         self.title(f"LSB Analysis — {os.path.basename(path)}")
-        self.geometry("500x360"); self.configure(bg="#FFFFFF"); self.grab_set()
+        self.geometry("500x360"); self.configure(bg="#1E1E1E"); self.grab_set()
         hdr=tk.Frame(self,bg="#264F78",height=32); hdr.pack(fill="x"); hdr.pack_propagate(False)
-        tk.Label(hdr,text="  🔍 Steganography Analysis (LSB)",
+        tk.Label(hdr,text="  Steganography Analysis (LSB)",
                  bg="#264F78",fg="white",font=("Segoe UI",9,"bold")).pack(side="left",padx=8,pady=4)
-        self._txt=tk.Text(self,font=("Consolas",9),bg="#F7F7F7",fg="#1E1E1E",
+        self._txt=tk.Text(self,font=("Consolas",9),bg="#0D0D0D",fg="#D4D4D4",
                           state="disabled",relief="flat",padx=8,pady=6)
         self._txt.pack(fill="both",expand=True,padx=6,pady=6)
-        self._txt.tag_configure("ok",   foreground="#1E8E3E",font=("Consolas",9,"bold"))
-        self._txt.tag_configure("warn", foreground="#B8860B",font=("Consolas",9,"bold"))
-        self._txt.tag_configure("err",  foreground="#D32F2F",font=("Consolas",9,"bold"))
-        self._txt.tag_configure("key",  foreground="#1565C0",font=("Consolas",9,"bold"))
-        self._txt.tag_configure("val",  foreground="#1E1E1E")
+        self._txt.tag_configure("ok",   foreground="#4EC94E",font=("Consolas",9,"bold"))
+        self._txt.tag_configure("warn", foreground="#FFCC44",font=("Consolas",9,"bold"))
+        self._txt.tag_configure("err",  foreground="#FF6666",font=("Consolas",9,"bold"))
+        self._txt.tag_configure("key",  foreground="#569CD6",font=("Consolas",9,"bold"))
+        self._txt.tag_configure("val",  foreground="#D4D4D4")
         tk.Label(self,text="Analyzing…",bg="#007ACC",fg="white",
                  font=("Segoe UI",8),anchor="w").pack(fill="x",side="bottom")
         threading.Thread(target=self._run,args=(path,),daemon=True).start()
@@ -1473,39 +1367,35 @@ class _StegoWindow(tk.Toplevel):
         tag={"ok":"ok","warn":"warn","info":"warn"}.get(lvl,"ok")
         t.insert("end",f"  VERDICT: {r.get('verdict','?')}\n",(tag,"key"))
         score=r.get("suspicion_score",0)
-        bar="█"*int(score*20)+"░"*(20-int(score*20))
+        bar="|"*int(score*20)+"."*(20-int(score*20))
         kv("Suspicion index:", f"{score:.2f}  [{bar}]")
         t.configure(state="disabled")
 
-
 class _ProcessWindow(tk.Toplevel):
-    """Processes and autorun."""
     def __init__(self,parent):
         super().__init__(parent)
         self.title("Process & Autorun Scan")
-        self.geometry("820x560"); self.configure(bg="#FFFFFF")
+        self.geometry("820x560"); self.configure(bg="#1E1E1E")
         nb=ttk.Notebook(self); nb.pack(fill="both",expand=True,padx=4,pady=4)
 
-        # Processes tab
-        f_proc=tk.Frame(nb,bg="#FFFFFF"); nb.add(f_proc,text="  Processes  ")
+        f_proc=tk.Frame(nb,bg="#1E1E1E"); nb.add(f_proc,text="  Processes  ")
         cols=("pid","name","cpu","mem","status","flag")
         self._ptree=ttk.Treeview(f_proc,columns=cols,show="headings")
         for c,w,t in (("pid",55,"PID"),("name",160,"Name"),("cpu",60,"CPU%"),
                       ("mem",80,"Memory"),("status",80,"Status"),("flag",80,"")):
             self._ptree.heading(c,text=t); self._ptree.column(c,width=w,anchor="center" if c!="name" else "w")
-        self._ptree.tag_configure("sus",foreground="#D32F2F",font=("Consolas",8,"bold"))
+        self._ptree.tag_configure("sus",foreground="#FF6666",font=("Consolas",8,"bold"))
         vsb=ttk.Scrollbar(f_proc,command=self._ptree.yview)
         self._ptree.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right",fill="y"); self._ptree.pack(fill="both",expand=True)
 
-        # Autorun tab
-        f_auto=tk.Frame(nb,bg="#FFFFFF"); nb.add(f_auto,text="  Autorun  ")
+        f_auto=tk.Frame(nb,bg="#1E1E1E"); nb.add(f_auto,text="  Autorun  ")
         cols2=("location","name","value","flag")
         self._atree=ttk.Treeview(f_auto,columns=cols2,show="headings")
         for c,w,t in (("location",180,"Location"),("name",120,"Name"),
                       ("value",280,"Value"),("flag",60,"")):
             self._atree.heading(c,text=t); self._atree.column(c,width=w)
-        self._atree.tag_configure("sus",foreground="#D32F2F",font=("Consolas",8,"bold"))
+        self._atree.tag_configure("sus",foreground="#FF6666",font=("Consolas",8,"bold"))
         vsb2=ttk.Scrollbar(f_auto,command=self._atree.yview)
         self._atree.configure(yscrollcommand=vsb2.set)
         vsb2.pack(side="right",fill="y"); self._atree.pack(fill="both",expand=True)
@@ -1522,37 +1412,35 @@ class _ProcessWindow(tk.Toplevel):
     def _populate(self,procs,runs):
         for p in procs:
             if "error" in p: continue
-            flag="🚨 SUSPICIOUS." if p.get("suspicious") else ""
+            flag="SUSPICIOUS" if p.get("suspicious") else ""
             tag=("sus",) if p.get("suspicious") else ()
             self._ptree.insert("","end",
                 values=(p["pid"],p["name"],p.get("cpu","?"),p["mem"],p["status"],flag),tags=tag)
         sus=sum(1 for p in procs if p.get("suspicious"))
         for a in runs:
-            flag="🚨" if a.get("suspicious") else ""
+            flag="!" if a.get("suspicious") else ""
             tag=("sus",) if a.get("suspicious") else ()
             self._atree.insert("","end",
                 values=(a.get("location","?")[:40],a.get("name","?")[:30],
                         a.get("value","?")[:60],flag),tags=tag)
         self._sb.configure(text=f"  Processes: {len(procs)}  Suspicious: {sus}  Autorun entries: {len(runs)}")
 
-
 class _NetworkWindow(tk.Toplevel):
-    """Network test."""
     def __init__(self,parent):
         super().__init__(parent)
-        self.title("Network Test — Wi-Fi / Ethernet")
-        self.geometry("540x420"); self.configure(bg="#FFFFFF")
+        self.title("Network Test")
+        self.geometry("540x420"); self.configure(bg="#1E1E1E")
         hdr=tk.Frame(self,bg="#264F78",height=32); hdr.pack(fill="x"); hdr.pack_propagate(False)
-        tk.Label(hdr,text="  📡 Network Diagnostics",bg="#264F78",fg="white",
+        tk.Label(hdr,text="  Network Diagnostics",bg="#264F78",fg="white",
                  font=("Segoe UI",9,"bold")).pack(side="left",padx=8,pady=4)
         self._prog=ttk.Progressbar(self,mode="indeterminate"); self._prog.pack(fill="x",padx=8,pady=4)
-        self._txt=tk.Text(self,font=("Consolas",9),bg="#F7F7F7",fg="#1E1E1E",
+        self._txt=tk.Text(self,font=("Consolas",9),bg="#0D0D0D",fg="#D4D4D4",
                           state="disabled",relief="flat",padx=8,pady=4)
         self._txt.pack(fill="both",expand=True,padx=6,pady=4)
-        self._txt.tag_configure("ok",   foreground="#1E8E3E")
-        self._txt.tag_configure("warn", foreground="#B8860B")
-        self._txt.tag_configure("key",  foreground="#1565C0",font=("Consolas",9,"bold"))
-        btn=tk.Button(self,text="▶ Run test",command=self._start,
+        self._txt.tag_configure("ok",   foreground="#4EC94E")
+        self._txt.tag_configure("warn", foreground="#FFCC44")
+        self._txt.tag_configure("key",  foreground="#569CD6",font=("Consolas",9,"bold"))
+        btn=tk.Button(self,text="Run test",command=self._start,
                       bg="#264F78",fg="white",font=("Segoe UI",9),relief="flat",cursor="hand2")
         btn.pack(pady=6); self._btn=btn
 
@@ -1573,29 +1461,28 @@ class _NetworkWindow(tk.Toplevel):
     def _done(self,r):
         self._prog.stop(); self._btn.configure(state="normal")
         self._txt.configure(state="normal")
-        self._txt.insert("end","\n  ─── Summary ───\n","key")
+        self._txt.insert("end","\n  --- Summary ---\n","key")
         kv=lambda k,v: (self._txt.insert("end",f"  {k:<22}","key"),self._txt.insert("end",f"{v}\n","ok"))
         kv("Ping:",    f"{r['ping_ms']} ms" if r['ping_ms'] else "no response")
         kv("Download:", f"{r['download_mbps']} Mbps" if r['download_mbps'] else "—")
         kv("Packet loss:", f"{r['packet_loss']}%" if r['packet_loss'] is not None else "—")
         self._txt.configure(state="disabled")
 
-
 class _BatteryWindow(tk.Toplevel):
     def __init__(self,parent):
         super().__init__(parent)
         self.title("Battery Status")
-        self.geometry("420x300"); self.configure(bg="#FFFFFF"); self.grab_set()
+        self.geometry("420x300"); self.configure(bg="#1E1E1E"); self.grab_set()
         hdr=tk.Frame(self,bg="#264F78",height=32); hdr.pack(fill="x"); hdr.pack_propagate(False)
-        tk.Label(hdr,text="  🔋 Battery",bg="#264F78",fg="white",
+        tk.Label(hdr,text="  Battery",bg="#264F78",fg="white",
                  font=("Segoe UI",9,"bold")).pack(side="left",padx=8,pady=4)
-        self._txt=tk.Text(self,font=("Consolas",9),bg="#F7F7F7",fg="#1E1E1E",
+        self._txt=tk.Text(self,font=("Consolas",9),bg="#0D0D0D",fg="#D4D4D4",
                           state="disabled",relief="flat",padx=8,pady=6)
         self._txt.pack(fill="both",expand=True,padx=6,pady=6)
-        self._txt.tag_configure("key",foreground="#1565C0",font=("Consolas",9,"bold"))
-        self._txt.tag_configure("val",foreground="#1E1E1E")
-        self._txt.tag_configure("ok", foreground="#1E8E3E")
-        self._txt.tag_configure("warn",foreground="#B8860B")
+        self._txt.tag_configure("key",foreground="#569CD6",font=("Consolas",9,"bold"))
+        self._txt.tag_configure("val",foreground="#D4D4D4")
+        self._txt.tag_configure("ok", foreground="#4EC94E")
+        self._txt.tag_configure("warn",foreground="#FFCC44")
         threading.Thread(target=self._load,daemon=True).start()
 
     def _load(self):
@@ -1610,7 +1497,7 @@ class _BatteryWindow(tk.Toplevel):
         else:
             pct=r.get("percent",0)
             tag="ok" if pct>50 else "warn" if pct>20 else "err"
-            bar="█"*int(pct/5)+"░"*(20-int(pct/5))
+            bar="|"*int(pct/5)+"."*(20-int(pct/5))
             kv("Charge:", f"{pct}%  [{bar}]",tag)
             kv("Power:", "AC power" if r.get("plugged") else "battery")
             if r.get("time_left"): kv("Remaining:", r["time_left"])
@@ -1619,22 +1506,21 @@ class _BatteryWindow(tk.Toplevel):
                                       "ok" if r["health"]>80 else "warn")
         t.configure(state="disabled")
 
-
 class _BTWindow(tk.Toplevel):
     def __init__(self,parent):
         super().__init__(parent)
         self.title("Bluetooth")
-        self.geometry("480x360"); self.configure(bg="#FFFFFF")
+        self.geometry("480x360"); self.configure(bg="#1E1E1E")
         hdr=tk.Frame(self,bg="#264F78",height=32); hdr.pack(fill="x"); hdr.pack_propagate(False)
-        tk.Label(hdr,text="  🔵 Bluetooth",bg="#264F78",fg="white",
+        tk.Label(hdr,text="  Bluetooth",bg="#264F78",fg="white",
                  font=("Segoe UI",9,"bold")).pack(side="left",padx=8,pady=4)
         self._prog=ttk.Progressbar(self,mode="indeterminate"); self._prog.pack(fill="x",padx=8,pady=4)
-        self._txt=tk.Text(self,font=("Consolas",9),bg="#F7F7F7",fg="#1E1E1E",
+        self._txt=tk.Text(self,font=("Consolas",9),bg="#0D0D0D",fg="#D4D4D4",
                           state="disabled",relief="flat",padx=8,pady=4)
         self._txt.pack(fill="both",expand=True,padx=6,pady=4)
-        self._txt.tag_configure("ok",  foreground="#1E8E3E")
-        self._txt.tag_configure("info",foreground="#1565C0")
-        btn=tk.Button(self,text="🔍 Scan",command=self._start,
+        self._txt.tag_configure("ok",  foreground="#4EC94E")
+        self._txt.tag_configure("info",foreground="#569CD6")
+        btn=tk.Button(self,text="Scan",command=self._start,
                       bg="#264F78",fg="white",font=("Segoe UI",9),relief="flat",cursor="hand2")
         btn.pack(pady=6); self._btn=btn
 
@@ -1657,14 +1543,13 @@ class _BTWindow(tk.Toplevel):
         for d in r["devices"]:
             self._log(f"  • {d.get('name','?')}  {d.get('mac','')}","ok")
 
-
 class _USBWindow(tk.Toplevel):
     def __init__(self,parent):
         super().__init__(parent)
         self.title("USB Devices")
-        self.geometry("560x380"); self.configure(bg="#FFFFFF")
+        self.geometry("560x380"); self.configure(bg="#1E1E1E")
         hdr=tk.Frame(self,bg="#264F78",height=32); hdr.pack(fill="x"); hdr.pack_propagate(False)
-        tk.Label(hdr,text="  🔌 USB Ports & Devices",bg="#264F78",fg="white",
+        tk.Label(hdr,text="  USB Ports & Devices",bg="#264F78",fg="white",
                  font=("Segoe UI",9,"bold")).pack(side="left",padx=8,pady=4)
         cols=("bus","dev","id","name")
         self._tree=ttk.Treeview(self,columns=cols,show="headings")
@@ -1687,31 +1572,30 @@ class _USBWindow(tk.Toplevel):
                 values=(d.get("bus",""),d.get("dev",""),d.get("id",""),d.get("name","?")))
         self._sb.configure(text=f"  Devices: {len(devs)}")
 
-
 class _SpeakerWindow(tk.Toplevel):
     def __init__(self,parent):
         super().__init__(parent)
         self.title("Speaker Test")
-        self.geometry("420x300"); self.configure(bg="#FFFFFF"); self.grab_set()
+        self.geometry("420x300"); self.configure(bg="#1E1E1E"); self.grab_set()
         hdr=tk.Frame(self,bg="#264F78",height=32); hdr.pack(fill="x"); hdr.pack_propagate(False)
-        tk.Label(hdr,text="  🔊 Speaker Test",bg="#264F78",fg="white",
+        tk.Label(hdr,text="  Speaker Test",bg="#264F78",fg="white",
                  font=("Segoe UI",9,"bold")).pack(side="left",padx=8,pady=4)
 
-        body=tk.Frame(self,bg="#FFFFFF"); body.pack(fill="both",expand=True,padx=16,pady=8)
-        tk.Label(body,text="Frequency (Hz):",bg="#FFFFFF",fg="#1E1E1E",
+        body=tk.Frame(self,bg="#1E1E1E"); body.pack(fill="both",expand=True,padx=16,pady=8)
+        tk.Label(body,text="Frequency (Hz):",bg="#1E1E1E",fg="#D4D4D4",
                  font=("Segoe UI",9)).grid(row=0,column=0,sticky="w",pady=4)
         self._freq=tk.Scale(body,from_=100,to=8000,orient="horizontal",length=280,
-                            bg="#FFFFFF",fg="#1E1E1E",troughcolor="#264F78",highlightthickness=0)
+                            bg="#1E1E1E",fg="#D4D4D4",troughcolor="#264F78",highlightthickness=0)
         self._freq.set(1000); self._freq.grid(row=0,column=1,pady=4)
 
-        tk.Label(body,text="Duration (sec):",bg="#FFFFFF",fg="#1E1E1E",
+        tk.Label(body,text="Duration (sec):",bg="#1E1E1E",fg="#D4D4D4",
                  font=("Segoe UI",9)).grid(row=1,column=0,sticky="w",pady=4)
         self._dur=tk.Scale(body,from_=0.5,to=5.0,resolution=0.5,orient="horizontal",length=280,
-                           bg="#FFFFFF",fg="#1E1E1E",troughcolor="#264F78",highlightthickness=0)
+                           bg="#1E1E1E",fg="#D4D4D4",troughcolor="#264F78",highlightthickness=0)
         self._dur.set(1.0); self._dur.grid(row=1,column=1,pady=4)
 
         freqs=[(100,"Sub-bass"),(300,"Bass"),(1000,"Mid"),(3000,"High-mid"),(8000,"Highs")]
-        pf=tk.Frame(body,bg="#FFFFFF"); pf.grid(row=2,column=0,columnspan=2,pady=8)
+        pf=tk.Frame(body,bg="#1E1E1E"); pf.grid(row=2,column=0,columnspan=2,pady=8)
         for hz,lbl in freqs:
             tk.Button(pf,text=f"{lbl}\n{hz} Hz",
                       command=lambda h=hz:self._play(h,1.0),
@@ -1722,7 +1606,7 @@ class _SpeakerWindow(tk.Toplevel):
                               font=("Segoe UI",8),anchor="w")
         self._status.pack(fill="x",side="bottom")
 
-        tk.Button(self,text="▶ Play",command=lambda:self._play(int(self._freq.get()),self._dur.get()),
+        tk.Button(self,text="Play",command=lambda:self._play(int(self._freq.get()),self._dur.get()),
                   bg="#264F78",fg="white",font=("Segoe UI",10),relief="flat",cursor="hand2"
                   ).pack(pady=6)
 
@@ -1735,44 +1619,42 @@ class _SpeakerWindow(tk.Toplevel):
         self.after(0,lambda:self._status.configure(
             text=f"  {freq} Hz — {'OK' if r['status']=='ok' else r['status']}"))
 
-
 class _SchedulerWindow(tk.Toplevel):
-    """Scan Scheduler."""
     def __init__(self,parent,scheduler,file_paths):
         super().__init__(parent)
         self.title("Scan Scheduler")
-        self.geometry("520x340"); self.configure(bg="#FFFFFF")
+        self.geometry("520x340"); self.configure(bg="#1E1E1E")
         self._sched=scheduler; self._paths=file_paths
         hdr=tk.Frame(self,bg="#264F78",height=32); hdr.pack(fill="x"); hdr.pack_propagate(False)
-        tk.Label(hdr,text="  ⏰ Scheduler",bg="#264F78",fg="white",
+        tk.Label(hdr,text="  Scheduler",bg="#264F78",fg="white",
                  font=("Segoe UI",9,"bold")).pack(side="left",padx=8,pady=4)
 
-        body=tk.Frame(self,bg="#FFFFFF"); body.pack(fill="both",expand=True,padx=16,pady=8)
+        body=tk.Frame(self,bg="#1E1E1E"); body.pack(fill="both",expand=True,padx=16,pady=8)
 
-        tk.Label(body,text="Job name:",bg="#FFFFFF",fg="#1E1E1E",
+        tk.Label(body,text="Job name:",bg="#1E1E1E",fg="#D4D4D4",
                  font=("Segoe UI",9)).grid(row=0,column=0,sticky="w",pady=4)
-        self._name=tk.Entry(body,font=("Segoe UI",9),bg="#F0F0F0",fg="#1E1E1E",width=24)
+        self._name=tk.Entry(body,font=("Segoe UI",9),bg="#252526",fg="white",width=24)
         self._name.insert(0,"Auto-scan"); self._name.grid(row=0,column=1,pady=4,padx=8)
 
-        tk.Label(body,text="Interval (minutes):",bg="#FFFFFF",fg="#1E1E1E",
+        tk.Label(body,text="Interval (minutes):",bg="#1E1E1E",fg="#D4D4D4",
                  font=("Segoe UI",9)).grid(row=1,column=0,sticky="w",pady=4)
         self._interval=tk.Scale(body,from_=5,to=1440,resolution=5,orient="horizontal",
-                                 length=200,bg="#FFFFFF",fg="#1E1E1E",troughcolor="#264F78",
+                                 length=200,bg="#1E1E1E",fg="#D4D4D4",troughcolor="#264F78",
                                  highlightthickness=0)
         self._interval.set(60); self._interval.grid(row=1,column=1,pady=4,padx=8)
 
         tk.Label(body,text=f"Files queued: {len(file_paths)}",
-                 bg="#FFFFFF",fg="#888",font=("Segoe UI",8)).grid(row=2,column=0,columnspan=2,pady=4)
+                 bg="#1E1E1E",fg="#888",font=("Segoe UI",8)).grid(row=2,column=0,columnspan=2,pady=4)
 
-        btn_frame=tk.Frame(body,bg="#FFFFFF"); btn_frame.grid(row=3,column=0,columnspan=2,pady=12)
-        tk.Button(btn_frame,text="➕ Add job",command=self._add,
+        btn_frame=tk.Frame(body,bg="#1E1E1E"); btn_frame.grid(row=3,column=0,columnspan=2,pady=12)
+        tk.Button(btn_frame,text="Add job",command=self._add,
                   bg="#264F78",fg="white",font=("Segoe UI",9),relief="flat",cursor="hand2"
                   ).pack(side="left",padx=4)
-        tk.Button(btn_frame,text="🗑 Remove selected",command=self._remove,
-                  bg="#C62828",fg="white",font=("Segoe UI",9),relief="flat",cursor="hand2"
+        tk.Button(btn_frame,text="Remove selected",command=self._remove,
+                  bg="#4B1113",fg="white",font=("Segoe UI",9),relief="flat",cursor="hand2"
                   ).pack(side="left",padx=4)
 
-        self._listbox=tk.Listbox(body,bg="#F0F0F0",fg="#1E1E1E",font=("Consolas",8),height=5)
+        self._listbox=tk.Listbox(body,bg="#252526",fg="#D4D4D4",font=("Consolas",8),height=5)
         self._listbox.grid(row=4,column=0,columnspan=2,sticky="ew",pady=4)
         self._refresh()
 
@@ -1787,7 +1669,7 @@ class _SchedulerWindow(tk.Toplevel):
         self._sched.add_job(name,interval,list(self._paths))
         if not self._sched._active: self._sched.start()
         self._refresh()
-        self._sb.configure(text=f"  Job «{name}» added (every {interval} min)")
+        self._sb.configure(text=f"  Job {name} added (every {interval} min)")
 
     def _remove(self):
         sel=self._listbox.curselection()
@@ -1803,23 +1685,37 @@ class _SchedulerWindow(tk.Toplevel):
             nxt=job["next"].strftime("%H:%M")
             self._listbox.insert("end",f"[ {job['label']} ]  every {job['interval_min']}min  next: {nxt}")
 
-# ── THEMES ──────────────────────────────────────────────────────
-THEME = {"bg":"#FFFFFF","bg2":"#F0F0F0","fg":"#1E1E1E","fg2":"#5A5A5A",
-         "accent":"#264F78","accent_fg":"#FFFFFF","toolbar":"#F3F3F3","statusbar":"#007ACC",
-         "sep":"#CCCCCC","tree_ok":"#1E8E3E","tree_warn":"#B8860B","tree_err":"#D32F2F",
-         "tree_pend":"#888888","log_ok":"#1E8E3E","log_warn":"#B8860B","log_err":"#D32F2F",
-         "log_info":"#1565C0","log_threat":"#B71C1C","detail_bg":"#F0F0F0","btn_hover":"#E5E5E5","pane_sash":"#D9D9D9"}
+THEME = {
+    "bg": "#F0F0F0",           # светло-серый фон
+    "bg2": "#E8E8E8",          # чуть темнее фона
+    "fg": "#1E1E1E",           # темный текст
+    "fg2": "#555555",          # серый текст
+    "accent": "#0078D4",       # синий акцент (как в Windows 11)
+    "accent_fg": "#FFFFFF",    # белый текст на акценте
+    "toolbar": "#E0E0E0",      # панель инструментов
+    "statusbar": "#0078D4",    # синяя строка статуса
+    "sep": "#C0C0C0",          # разделители
+    "tree_ok": "#107C10",      # зеленый для OK
+    "tree_warn": "#C19C00",    # желтый для предупреждений
+    "tree_err": "#D13438",     # красный для ошибок
+    "tree_pend": "#888888",    # серый для ожидания
+    "log_ok": "#107C10",       # зеленый лог
+    "log_warn": "#C19C00",     # желтый лог
+    "log_err": "#D13438",      # красный лог
+    "log_info": "#005A9E",     # синий лог (информация)
+    "log_threat": "#D13438",   # красный для угроз
+    "detail_bg": "#FFFFFF",    # белый фон деталей
+    "btn_hover": "#D0D0D0",    # кнопка при наведении
+    "pane_sash": "#C0C0C0"     # разделители панелей
+}
 
-# ── MAIN APPLICATION ────────────────────────────────────────────
 class SonarApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self._lang  = "RU"
-        self._theme = "light"
         self.geometry("1100x700"); self.minsize(800,520)
 
         self._q            = queue.Queue()
-        self._checker_inst = None   # FileChecker — created in _build_ui
+        self._checker_inst = None
         self._running      = False
         self._results      = []
         self._file_paths   = []
@@ -1831,20 +1727,27 @@ class SonarApp(tk.Tk):
 
         self._build_ui()
         self._poll_queue()
-        self._log("Sonar v1.2 started","info")
+        self._log("Sonar v1.1 started","info")
+        # load files passed via command line / "Open with"
+        for arg in sys.argv[1:]:
+            p=os.path.abspath(arg)
+            if os.path.isfile(p) and p not in self._file_paths:
+                self._file_paths.append(p); self._insert_pending(p)
+        if len(sys.argv)>1:
+            self._log(f"Loaded {len(sys.argv)-1} file(s) from command line","info")
         c_st="active" if CORE.available else "Python fallback"
         self._log(f"C-core: {c_st}","ok" if CORE.available else "warn")
         self._log(f"Virus DB: {len(VDB.signatures)} signatures","info")
-        self._log(f"Pillow: {'available' if HAS_PIL else 'missing (pip install Pillow)'}","info")
-        self._log(f"Mutagen: {'available' if HAS_MUTAGEN else 'missing (pip install mutagen)'}","info")
-        self._log(f"psutil: {'available' if HAS_PSUTIL else 'missing (pip install psutil)'}","info")
+        self._log(f"Pillow: {'available' if HAS_PIL else 'missing'}","info")
+        self._log(f"Mutagen: {'available' if HAS_MUTAGEN else 'missing'}","info")
+        self._log(f"psutil: {'available' if HAS_PSUTIL else 'missing'}","info")
 
     @property
     def T(self): return THEME
 
     def _build_ui(self):
         T=self.T
-        self.title("Sonar v1.2 — File & Device Diagnostics")
+        self.title("Sonar (v1.1)")
         self.configure(bg=T["bg"])
 
         style=ttk.Style(self)
@@ -1852,7 +1755,6 @@ class SonarApp(tk.Tk):
             try: style.theme_use(th); break
             except: pass
 
-        # ── Menu ──────────────────────────────────────────────────────────
         mb=tk.Menu(self,tearoff=0,bg=T["toolbar"],fg=T["fg"])
 
         mf=tk.Menu(mb,tearoff=0,bg=T["toolbar"],fg=T["fg"])
@@ -1877,8 +1779,8 @@ class SonarApp(tk.Tk):
         mb.add_cascade(label="View",menu=mv)
 
         mt=tk.Menu(mb,tearoff=0,bg=T["toolbar"],fg=T["fg"])
-        mt.add_command(label="🔎 Processes and autorun",command=lambda:_ProcessWindow(self))
-        mt.add_command(label="⏰ Scheduler",command=lambda:_SchedulerWindow(self,self._scheduler,self._file_paths))
+        mt.add_command(label="Processes and autorun",command=lambda:_ProcessWindow(self))
+        mt.add_command(label="Scheduler",command=lambda:_SchedulerWindow(self,self._scheduler,self._file_paths))
         mb.add_cascade(label="Tools",menu=mt)
 
         mh=tk.Menu(mb,tearoff=0,bg=T["toolbar"],fg=T["fg"])
@@ -1893,25 +1795,20 @@ class SonarApp(tk.Tk):
         self.bind("<F6>",lambda e:self._start_deep())
         self.bind("<Return>",lambda e:self._show_details())
 
-        # ── Toolbar ────────────────────────────────────────────────────────
         tb=tk.Frame(self,bg=T["toolbar"],relief="raised",bd=1,height=32)
         tb.pack(fill="x"); tb.pack_propagate(False)
-        for txt,cmd in [("📄 Files",self._add_files),("📁 Folder",self._add_folder),
-                        ("▶ Scan [F5]",self._start_scan),("🔬 Deep [F6]",self._start_deep),
-                        ("✕ Clear",self._clear),("💾 Report",self._export_report),
-                        ("🔎 Processes",lambda:_ProcessWindow(self)),
-                        ("⏰ Scheduler",lambda:_SchedulerWindow(self,self._scheduler,self._file_paths))]:
+        for txt,cmd in [("Files",self._add_files),("Folder",self._add_folder),
+                        ("Scan [F5]",self._start_scan),("Deep [F6]",self._start_deep),
+                        ("Clear",self._clear),("Report",self._export_report),
+                        ("Processes",lambda:_ProcessWindow(self)),
+                        ("Scheduler",lambda:_SchedulerWindow(self,self._scheduler,self._file_paths))]:
             self._mk_tb_btn(txt,cmd,tb)
-            if txt in("📁 Folder","🔬 Deep [F6]","💾 Report"):
+            if txt in("Folder","Deep [F6]","Report"):
                 tk.Frame(tb,bg=T["sep"],width=1).pack(side="left",fill="y",padx=3,pady=3)
 
-        # C-core badge
-        c_txt="✓ C-core" if CORE.available else "✗ C-core"
-        c_col=T["log_ok"] if CORE.available else T["log_err"]
-        tk.Label(tb,text=f"  {c_txt}  |  DB: {len(VDB.signatures)} sigs.  ",
-                 bg=T["toolbar"],fg=c_col,font=("Consolas",8)).pack(side="right",padx=4)
+        tk.Label(tb,text=f"  DB: {len(VDB.signatures)} sigs.  ",
+                 bg=T["toolbar"],fg=T["fg2"],font=("Segoe UI",8)).pack(side="right",padx=4)
 
-        # ── Notebook ──────────────────────────────────────────────────────
         nb=ttk.Notebook(self); nb.pack(fill="both",expand=True)
         f_files=tk.Frame(nb,bg=T["bg"])
         f_dev  =tk.Frame(nb,bg=T["bg"])
@@ -1924,13 +1821,11 @@ class SonarApp(tk.Tk):
         self._build_devices_tab(f_dev)
         self._build_logs_tab(f_logs)
 
-        # ── Statusbar ─────────────────────────────────────────────────────
         sbar=tk.Frame(self,bg=T["statusbar"],relief="sunken",bd=1,height=20)
         sbar.pack(fill="x",side="bottom"); sbar.pack_propagate(False)
-        fg_s=T["accent_fg"] if self._theme=="dark" else T["fg"]
-        self._status_left =tk.Label(sbar,text="  Ready",bg=T["statusbar"],fg=fg_s,font=("Segoe UI",8),anchor="w")
+        self._status_left =tk.Label(sbar,text="  Ready",bg=T["statusbar"],fg=T["accent_fg"],font=("Segoe UI",8),anchor="w")
         self._status_left.pack(side="left",fill="x",expand=True,padx=4)
-        self._status_right=tk.Label(sbar,text="",bg=T["statusbar"],fg=fg_s,font=("Segoe UI",8),anchor="e")
+        self._status_right=tk.Label(sbar,text="",bg=T["statusbar"],fg=T["accent_fg"],font=("Segoe UI",8),anchor="e")
         self._status_right.pack(side="right",padx=4)
 
     def _mk_tb_btn(self,text,cmd,parent):
@@ -1959,7 +1854,6 @@ class SonarApp(tk.Tk):
             self._log_text.see("end"); self._log_text.configure(state="disabled")
         self._poll_queue()
 
-    # ─── Tab: Files ────────────────────────────────────────────────────
     def _build_files_tab(self,parent):
         T=self.T
         pane=tk.PanedWindow(parent,orient="horizontal",sashwidth=5,bg=T["pane_sash"],handlesize=0)
@@ -1984,7 +1878,6 @@ class SonarApp(tk.Tk):
         self._tree.bind("<<TreeviewSelect>>",self._on_sel)
         self._tree.bind("<Button-3>",    self._context_menu)
 
-        # Drag & Drop (TkDND if available, else fallback)
         try:
             self._tree.drop_target_register("DND_Files")
             self._tree.dnd_bind("<<Drop>>", self._on_drop)
@@ -2017,18 +1910,18 @@ class SonarApp(tk.Tk):
         is_arch=ext in('.zip','.docx','.xlsx','.pptx','.jar','.apk','.gz','.bz2','.tar','.7z','.rar')
 
         menu=tk.Menu(self,tearoff=0,bg=self.T["toolbar"],fg=self.T["fg"])
-        menu.add_command(label="🔬 Deep analysis",command=lambda:self._start_deep_single(path))
-        menu.add_command(label="🏷 Metadata",command=lambda:_MetaWindow(self,path))
+        menu.add_command(label="Deep analysis",command=lambda:self._start_deep_single(path))
+        menu.add_command(label="Metadata",command=lambda:_MetaWindow(self,path))
         if is_arch:
-            menu.add_command(label="📦 Archive structure",command=lambda:_ArchiveViewWindow(self,path))
+            menu.add_command(label="Archive structure",command=lambda:_ArchiveViewWindow(self,path))
         if is_img:
-            menu.add_command(label="🔍 LSB Steganography",command=lambda:_StegoWindow(self,path))
+            menu.add_command(label="LSB Steganography",command=lambda:_StegoWindow(self,path))
         if is_txt:
-            menu.add_command(label="📊 Compare line-by-line…",command=lambda:_DiffWindow(self,path))
+            menu.add_command(label="Compare line-by-line…",command=lambda:_DiffWindow(self,path))
         menu.add_separator()
-        menu.add_command(label="🔧 Attempt repair",command=lambda:_RepairWindow(self,path))
+        menu.add_command(label="Attempt repair",command=lambda:_RepairWindow(self,path))
         menu.add_separator()
-        monitor_lbl="🔴 Stop monitoring" if path in self._monitor._watching else "👁 Monitor file"
+        monitor_lbl="Stop monitoring" if path in self._monitor._watching else "Monitor file"
         def toggle_mon():
             if path in self._monitor._watching:
                 self._monitor.remove(path); self._log(f"Monitoring stopped: {os.path.basename(path)}","info")
@@ -2036,7 +1929,7 @@ class SonarApp(tk.Tk):
                 self._monitor.add(path); self._monitor.start(); self._log(f"Monitoring: {os.path.basename(path)}","info")
         menu.add_command(label=monitor_lbl,command=toggle_mon)
         menu.add_separator()
-        menu.add_command(label="📋 Copy path",command=lambda:(self.clipboard_clear(),self.clipboard_append(path)))
+        menu.add_command(label="Copy path",command=lambda:(self.clipboard_clear(),self.clipboard_append(path)))
         menu.post(event.x_root,event.y_root)
 
     def _on_drop(self,event):
@@ -2065,10 +1958,10 @@ class SonarApp(tk.Tk):
         t.tag_configure("thr_w",foreground=T["log_warn"])
         t.tag_configure("thr_c",foreground=T["log_ok"])
 
-        sm={"ok":("✓ OK","ok"),"warn":("⚠ WARNING","warn"),"error":("✗ DAMAGED","err")}
+        sm={"ok":("OK","ok"),"warn":("WARNING","warn"),"error":("DAMAGED","err")}
         st,sg=sm.get(res["status"],("?",""))
         t.insert("end",f"{st}\n",(sg,"head"))
-        t.insert("end","─"*30+"\n","key")
+        t.insert("end","-"*30+"\n","key")
         for k,v in (("Name",res["name"]),("Type",res["type"]),("Size",_fmt(res["size"]))):
             t.insert("end",f"{k:<9}","key"); t.insert("end",f"{v}\n","val")
 
@@ -2077,17 +1970,17 @@ class SonarApp(tk.Tk):
             for d in res["details"]: t.insert("end",f"  {d}\n","val")
         if res.get("issues"):
             t.insert("end","\nIssues:\n","head")
-            for i in res["issues"]: t.insert("end",f"  ⚠ {i}\n",("warn","val"))
+            for i in res["issues"]: t.insert("end",f"  {i}\n",("warn","val"))
 
         deep=res.get("deep")
         if deep:
-            t.insert("end","\n🔬 Deep analysis:\n","head")
+            t.insert("end","\nDeep analysis:\n","head")
             for k,v in (("CRC-32",deep.get("crc32","—")),
                         ("Entropy",f"{deep.get('entropy','—')} bits/bytes"),
                         ("",deep.get("entropy_hint","")),
                         ("Nulls",f"{deep.get('null_ratio','—')}%  {deep.get('null_hint','')}"),
                         ("ASCII",f"{deep.get('ascii_ratio','—')}% ({deep.get('content_class','—')})"),
-                        ("C-core","✓ yes" if deep.get("c_backend") else "✗ Python fallback")):
+                        ("C-core","yes" if deep.get("c_backend") else "Python fallback")):
                 t.insert("end",f"  {k:<10}","key"); t.insert("end",f"{v}\n","val")
 
             if deep.get("top_bytes"):
@@ -2099,137 +1992,107 @@ class SonarApp(tk.Tk):
                 t.insert("end","\n  Structure:\n","head")
                 for line in deep["extra"]: t.insert("end",f"  {line}\n","val")
 
-            # Metadata
             meta=deep.get("meta")
             if meta and len(meta)>1:
-                t.insert("end","\n🏷 Metadata:\n","head")
+                t.insert("end","\nMetadata:\n","head")
                 for k,v in list(meta.items())[:12]:
                     if k!="format": t.insert("end",f"  {k[:18]:<18}","key"); t.insert("end",f"{str(v)[:60]}\n","val")
 
-            # Steganography
             stego=deep.get("stego")
             if stego and not stego.get("error"):
-                t.insert("end","\n🔍 LSB analysis:\n","head")
+                t.insert("end","\nLSB analysis:\n","head")
                 t.insert("end",f"  {stego.get('verdict','?')}\n",
                          {"ok":"thr_c","warn":"thr_w"}.get(stego.get("level","ok"),"val"))
                 t.insert("end",f"  LSB avg: {stego.get('lsb_avg','?')}  χ²: {stego.get('chi2_r','?')}\n","val")
 
-            # Archive
             arch=deep.get("archive")
             if arch and "stats" in arch:
                 s=arch["stats"]
-                t.insert("end","\n📦 Archive:\n","head")
-                t.insert("end",f"  Files: {s.get('total_files','?')}  {s.get('compressed','?')}→{s.get('uncompressed','?')}\n","val")
+                t.insert("end","\nArchive:\n","head")
+                t.insert("end",f"  Files: {s.get('total_files','?')}  {s.get('compressed','?')}->{s.get('uncompressed','?')}\n","val")
                 if s.get("zip_bomb_risk"):
-                    t.insert("end","  🚨 ZIP BOMB!\n","thr_d")
+                    t.insert("end","  ZIP-BOMB\n","thr_d")
 
-            # Threats
             threat=deep.get("threat")
             if threat:
-                t.insert("end","\n🛡 Threat analysis:\n","head")
+                t.insert("end","\nThreat analysis:\n","head")
                 lvl=threat.get("level","clean")
-                lbl={"clean":"✓ No threats detected","suspicious":"⚠ Suspicious","danger":"🚨 LIKELY MALICIOUS"}[lvl]
+                lbl={"clean":"No threats detected","suspicious":"Suspicious","danger":"LIKELY MALICIOUS"}[lvl]
                 tag={"clean":"thr_c","suspicious":"thr_w","danger":"thr_d"}[lvl]
                 t.insert("end",f"  {lbl}\n",(tag,"head"))
                 for r2 in threat.get("reasons",[]):
-                    tg="thr_d" if "🚨" in r2 else "thr_w"
+                    tg="thr_d" if "[" in r2 else "thr_w"
                     t.insert("end",f"  {r2}\n",tg)
 
             probs=deep.get("verdict_problems",[])
             if probs:
-                t.insert("end","\n  ⚠ Summary:\n",("warn","head"))
+                t.insert("end","\n  Summary:\n",("warn","head"))
                 for p in probs: t.insert("end",f"    • {p}\n",("warn","val"))
             else:
-                t.insert("end","\n  ✓ No problems found\n",("ok","val"))
+                t.insert("end","\n  No problems found\n",("ok","val"))
 
         t.configure(state="disabled")
 
-    # ─── Tab: Devices ──────────────────────────────────────────────
     def _build_devices_tab(self,parent):
         T=self.T
-        pane=tk.PanedWindow(parent,orient="horizontal",sashwidth=5,bg=T["pane_sash"],handlesize=0)
-        pane.pack(fill="both",expand=True)
 
-        # Device tree (left)
-        left=tk.Frame(pane,bg=T["bg"]); pane.add(left,width=280)
+        # ── invisible tree nodes (kept for compatibility with action callbacks) ──
+        self._dev_tree=ttk.Treeview(parent,show="tree")  # hidden, never packed
+        root_id=self._dev_tree.insert("","end",text="This computer",open=True)
+        inp_id=self._dev_tree.insert(root_id,"end",text="Input devices",open=True)
+        self._kbd_node  =self._dev_tree.insert(inp_id,"end",text="Keyboard  [not tested]")
+        self._mouse_node=self._dev_tree.insert(inp_id,"end",text="Mouse  [not tested]")
 
-        hdr2=tk.Frame(left,bg=T["accent"],height=28); hdr2.pack(fill="x"); hdr2.pack_propagate(False)
-        tk.Label(hdr2,text="  Device Manager",bg=T["accent"],fg=T["accent_fg"],
-                 font=("Segoe UI",8,"bold")).pack(side="left",padx=6,pady=4)
+        aud_id=self._dev_tree.insert(root_id,"end",text="Sound",open=True)
+        self._mic_node  =self._dev_tree.insert(aud_id,"end",text="Microphone")
+        self._spk_node  =self._dev_tree.insert(aud_id,"end",text="Speakers")
+        disp_id=self._dev_tree.insert(root_id,"end",text="Display",open=True)
+        self._disp_node =self._dev_tree.insert(disp_id,"end",text="Display")
+        pc_id=self._dev_tree.insert(root_id,"end",text="PC / System",open=True)
+        self._bat_node  =self._dev_tree.insert(pc_id,"end",text="Battery")
+        self._net_node  =self._dev_tree.insert(pc_id,"end",text="Network")
+        self._bt_node   =self._dev_tree.insert(pc_id,"end",text="Bluetooth")
+        usb_id=self._dev_tree.insert(root_id,"end",text="USB",open=True)
+        self._usb_node  =self._dev_tree.insert(usb_id,"end",text="USB")
 
-        self._dev_tree=ttk.Treeview(left,show="tree",selectmode="browse")
-        dev_vsb=ttk.Scrollbar(left,command=self._dev_tree.yview)
-        self._dev_tree.configure(yscrollcommand=dev_vsb.set)
-        dev_vsb.pack(side="right",fill="y"); self._dev_tree.pack(fill="both",expand=True)
+        # ── new tile-based layout ──────────────────────────────────────────────
+        outer=tk.Frame(parent,bg=T["bg"]); outer.pack(fill="both",expand=True)
 
-        # Populate tree — like Windows Device Manager
-        root_id=self._dev_tree.insert("","end",text="💻 This computer",open=True)
+        # top: tile grid
+        grid_frame=tk.Frame(outer,bg=T["bg"]); grid_frame.pack(fill="both",expand=True,padx=12,pady=12)
 
-        inp_id=self._dev_tree.insert(root_id,"end",text="🖱 Input devices",open=True)
-        self._kbd_node  =self._dev_tree.insert(inp_id,"end",text="⌨  Keyboard  [not tested]")
-        self._mouse_node=self._dev_tree.insert(inp_id,"end",text="🖱  Mouse  [not tested]")
-
-        aud_id=self._dev_tree.insert(root_id,"end",text="🔊 Sound",open=True)
-        self._mic_node  =self._dev_tree.insert(aud_id,"end",text="🎤  Microphone  [not tested]")
-        self._spk_node  =self._dev_tree.insert(aud_id,"end",text="🔊  Speakers  [not tested]")
-
-        disp_id=self._dev_tree.insert(root_id,"end",text="🖥 Display",open=True)
-        self._disp_node =self._dev_tree.insert(disp_id,"end",text="🖥  Display Test  [not tested]")
-
-        pc_id=self._dev_tree.insert(root_id,"end",text="🖥 PC / System",open=True)
-        self._bat_node  =self._dev_tree.insert(pc_id,"end",text="🔋  Battery  [not tested]")
-        self._net_node  =self._dev_tree.insert(pc_id,"end",text="📡  Wi-Fi / Network  [not tested]")
-        self._bt_node   =self._dev_tree.insert(pc_id,"end",text="🔵  Bluetooth  [not tested]")
-
-        usb_id=self._dev_tree.insert(root_id,"end",text="🔌 USB",open=True)
-        self._usb_node  =self._dev_tree.insert(usb_id,"end",text="🔌  USB ports  [not tested]")
-
-        self._dev_tree.bind("<Double-1>",self._dev_tree_action)
-
-        # Right part — properties
-        right=tk.Frame(pane,bg=T["bg"]); pane.add(right)
-
-        phdr=tk.Frame(right,bg=T["bg2"],relief="groove",bd=1,height=28)
-        phdr.pack(fill="x"); phdr.pack_propagate(False)
-        tk.Label(phdr,text=" Device properties",bg=T["bg2"],fg=T["fg"],
-                 font=("Segoe UI",8,"bold")).pack(side="left",padx=6,pady=4)
-
-        self._icon_cache={}  # keeps PhotoImage refs alive
-        tiles=tk.Frame(right,bg=T["bg"]); tiles.pack(fill="x",padx=8,pady=10)
-        for col in range(3): tiles.columnconfigure(col,weight=1)
-
-        DEVICE_TILES=[
-            ("keyboard",   "⌨",  "Keyboard",    0,0,self._test_keyboard),
-            ("mouse",      "🖱",  "Mouse",       0,1,self._test_mouse),
-            ("microphone", "🎤",  "Microphone",  0,2,self._test_mic),
-            ("speakers",   "🔊",  "Speakers",    1,0,self._test_speakers),
-            ("display",    "🖥",  "Display",     1,1,lambda:DEV.display_test(self)),
-            ("battery",    "🔋",  "Battery",     1,2,lambda:_BatteryWindow(self)),
-            ("network",    "📡",  "Network",     2,0,lambda:_NetworkWindow(self)),
-            ("bluetooth",  "🔵",  "Bluetooth",   2,1,lambda:_BTWindow(self)),
-            ("usb",        "🔌",  "USB",         2,2,lambda:_USBWindow(self)),
+        TILES=[
+            ("⌨  Keyboard",   self._test_keyboard,   "_kbd_card"),
+            ("🖱  Mouse",       self._test_mouse,      "_mouse_card"),
+            ("🎤  Microphone",  self._test_mic,        "_mic_card"),
+            ("🔊  Speakers",    self._test_speakers,   "_spk_card"),
+            ("🖥  Display",     lambda:DEV.display_test(self), "_disp_card"),
+            ("🔋  Battery",     lambda:_BatteryWindow(self),   "_bat_card"),
+            ("📡  Network",     lambda:_NetworkWindow(self),   "_net_card"),
+            ("🔵  Bluetooth",   lambda:_BTWindow(self),        "_bt_card"),
+            ("🔌  USB",         lambda:_USBWindow(self),       "_usb_card"),
         ]
-        cards_by_key={}
-        for key,emoji,label,row,col,cmd in DEVICE_TILES:
-            cards_by_key[key]=self._dev_tile(tiles,key,emoji,label,row,col,cmd)
-        self._kbd_card   = cards_by_key["keyboard"]
-        self._mouse_card = cards_by_key["mouse"]
-        self._mic_card   = cards_by_key["microphone"]
+        COLS=3
+        for idx,(label,cmd,attr) in enumerate(TILES):
+            row,col=divmod(idx,COLS)
+            card=self._dev_tile(grid_frame,label,cmd,row,col)
+            setattr(self,attr,card)
 
-        ehdr=tk.Frame(right,bg=T["bg2"],relief="groove",bd=1,height=22)
-        ehdr.pack(fill="x",padx=8,pady=(8,0)); ehdr.pack_propagate(False)
-        tk.Label(ehdr,text=" Event log",bg=T["bg2"],fg=T["fg"],
-                 font=("Segoe UI",8,"bold")).pack(side="left",padx=6)
+        # bottom: event log
+        log_hdr=tk.Frame(outer,bg=T["bg2"],relief="flat",height=24)
+        log_hdr.pack(fill="x",padx=12); log_hdr.pack_propagate(False)
+        tk.Label(log_hdr,text="  Event log",bg=T["bg2"],fg=T["fg2"],
+                 font=("Segoe UI",8,"bold")).pack(side="left",padx=4,pady=3)
 
-        lf=tk.Frame(right,bg=T["bg"]); lf.pack(fill="both",expand=True,padx=8,pady=(0,8))
-        self._dev_log=tk.Text(lf,height=6,state="disabled",font=("Consolas",8),
+        lf=tk.Frame(outer,bg=T["bg"]); lf.pack(fill="x",padx=12,pady=(0,10))
+        self._dev_log=tk.Text(lf,height=5,state="disabled",font=("Consolas",8),
                                relief="sunken",bd=1,wrap="word",cursor="arrow",
                                bg=T["detail_bg"],fg=T["fg"])
         lsb=ttk.Scrollbar(lf,command=self._dev_log.yview)
         self._dev_log.configure(yscrollcommand=lsb.set)
         lsb.pack(side="right",fill="y"); self._dev_log.pack(fill="both",expand=True)
-        for tag,col in (("ok",T["log_ok"]),("warn",T["log_warn"]),("err",T["log_err"]),("info",T["log_info"])):
-            self._dev_log.tag_config(tag,foreground=col)
+        for tag,col2 in (("ok",T["log_ok"]),("warn",T["log_warn"]),("err",T["log_err"]),("info",T["log_info"])):
+            self._dev_log.tag_config(tag,foreground=col2)
 
         self.bind("<KeyPress>",    self._on_key)
         self.bind("<ButtonPress>", self._on_click)
@@ -2237,84 +2100,51 @@ class SonarApp(tk.Tk):
         self.bind("<Button-4>",    self._on_scroll)
         self.bind("<Button-5>",    self._on_scroll)
 
-    def _load_dev_icon(self,key,size=44):
-        """Load Assets/<key>.png (or .jpg/.jpeg/.webp) for a device tile, if available."""
-        if not HAS_PIL: return None
-        if key in self._icon_cache: return self._icon_cache[key]
-        for suffix in (".png",".jpg",".jpeg",".webp"):
-            p=ASSETS_DIR/f"{key}{suffix}"
-            if p.exists():
-                try:
-                    img=Image.open(p).convert("RGBA").resize((size,size),Image.LANCZOS)
-                    photo=ImageTk.PhotoImage(img)
-                    self._icon_cache[key]=photo
-                    return photo
-                except Exception:
-                    return None
-        self._icon_cache[key]=None
-        return None
-
-    def _dev_tile(self,parent,key,emoji,label,row,col,cmd):
-        """A square, clickable device button: image (or emoji fallback) + name + status."""
+    def _dev_tile(self,parent,label,cmd,row,col):
+        """Square clickable tile for the Devices tab."""
         T=self.T
-        SIZE=108
-        tile=tk.Frame(parent,bg=T["bg2"],relief="raised",bd=1,
-                       width=SIZE,height=SIZE,cursor="hand2")
-        tile.grid(row=row,column=col,padx=6,pady=6)
-        tile.pack_propagate(False)
+        TILE_SIZE=140
+        frame=tk.Frame(parent,bg=T["detail_bg"],relief="groove",bd=1,
+                        width=TILE_SIZE,height=TILE_SIZE)
+        frame.grid(row=row,column=col,padx=6,pady=6,sticky="nsew")
+        frame.grid_propagate(False)
+        parent.columnconfigure(col,weight=1)
 
-        icon=self._load_dev_icon(key,size=44)
-        if icon is not None:
-            icon_lbl=tk.Label(tile,image=icon,bg=T["bg2"])
-        else:
-            icon_lbl=tk.Label(tile,text=emoji,font=("Segoe UI",22),bg=T["bg2"],fg=T["fg"])
-        icon_lbl.pack(pady=(10,2))
+        sv=tk.StringVar(value="")
+        # icon+name label (top portion)
+        name_lbl=tk.Label(frame,text=label,bg=T["detail_bg"],fg=T["fg"],
+                           font=("Segoe UI",10),wraplength=TILE_SIZE-16,justify="center")
+        name_lbl.place(relx=0.5,rely=0.32,anchor="center")
+        # status label (middle)
+        st_lbl=tk.Label(frame,textvariable=sv,bg=T["detail_bg"],fg=T["fg2"],
+                         font=("Segoe UI",7),wraplength=TILE_SIZE-12,justify="center")
+        st_lbl.place(relx=0.5,rely=0.62,anchor="center")
+        # Test button (bottom)
+        btn=tk.Button(frame,text="Test",command=cmd,
+                      relief="flat",bg=T["accent"],fg=T["accent_fg"],
+                      font=("Segoe UI",8),cursor="hand2",bd=0,
+                      activebackground=T["log_info"],activeforeground="white",
+                      padx=10,pady=2)
+        btn.place(relx=0.5,rely=0.88,anchor="center")
 
-        name_lbl=tk.Label(tile,text=label,font=("Segoe UI",8,"bold"),bg=T["bg2"],fg=T["fg"])
-        name_lbl.pack()
+        # hover highlight
+        def _enter(e): frame.configure(bg="#E3F0FC"); name_lbl.configure(bg="#E3F0FC"); st_lbl.configure(bg="#E3F0FC")
+        def _leave(e): frame.configure(bg=T["detail_bg"]); name_lbl.configure(bg=T["detail_bg"]); st_lbl.configure(bg=T["detail_bg"])
+        for w in (frame,name_lbl,st_lbl):
+            w.bind("<Enter>",_enter); w.bind("<Leave>",_leave)
+        frame.bind("<Button-1>",lambda e:cmd())
+        name_lbl.bind("<Button-1>",lambda e:cmd())
 
-        status_var=tk.StringVar(value="not tested")
-        status_lbl=tk.Label(tile,textvariable=status_var,font=("Segoe UI",7),
-                             bg=T["bg2"],fg=T["fg2"],wraplength=SIZE-10,justify="center")
-        status_lbl.pack(pady=(2,6))
+        return {"sv":sv,"frame":frame,"st_lbl":st_lbl}
 
-        widgets=(tile,icon_lbl,name_lbl,status_lbl)
-        def on_enter(_e=None):
-            for w in widgets: w.configure(bg=T["btn_hover"])
-            tile.configure(relief="solid")
-        def on_leave(_e=None):
-            for w in widgets: w.configure(bg=T["bg2"])
-            tile.configure(relief="raised")
-        for w in widgets:
-            w.bind("<Button-1>",lambda e:cmd())
-            w.bind("<Enter>",on_enter)
-            w.bind("<Leave>",on_leave)
-
-        return {"sv":status_var,"frame":tile}
-
-    def _dev_tree_action(self,event):
-        sel=self._dev_tree.selection()
-        if not sel: return
-        node=sel[0]
-        if node==self._bat_node:   _BatteryWindow(self)
-        elif node==self._net_node: _NetworkWindow(self)
-        elif node==self._bt_node:  _BTWindow(self)
-        elif node==self._usb_node: _USBWindow(self)
-        elif node==self._spk_node: self._test_speakers()
-        elif node==self._disp_node:DEV.display_test(self)
-        elif node==self._kbd_node: self._test_keyboard()
-        elif node==self._mouse_node:self._test_mouse()
-        elif node==self._mic_node: self._test_mic()
-
-    # ─── Tab: Logs ────────────────────────────────────────────────────
     def _build_logs_tab(self,parent):
         T=self.T
         hdr=tk.Frame(parent,bg=T["accent"],height=28); hdr.pack(fill="x"); hdr.pack_propagate(False)
-        tk.Label(hdr,text="  📋 Sonar System Log",bg=T["accent"],fg=T["accent_fg"],
+        tk.Label(hdr,text="  Sonar System Log",bg=T["accent"],fg=T["accent_fg"],
                  font=("Segoe UI",9,"bold")).pack(side="left",padx=6,pady=4)
         tb2=tk.Frame(parent,bg=T["toolbar"],relief="raised",bd=1,height=26)
         tb2.pack(fill="x"); tb2.pack_propagate(False)
-        for txt,cmd in [("🗑 Clear",self._clear_logs),("💾 Export…",self._export_logs)]:
+        for txt,cmd in [("Clear",self._clear_logs),("Export…",self._export_logs)]:
             tk.Button(tb2,text=txt,command=cmd,relief="flat",bg=T["toolbar"],fg=T["fg"],
                       font=("Segoe UI",8),cursor="hand2").pack(side="left",padx=4,pady=2)
         frame=tk.Frame(parent,bg=T["bg"]); frame.pack(fill="both",expand=True,padx=6,pady=6)
@@ -2348,7 +2178,6 @@ class SonarApp(tk.Tk):
         with open(p,"w",encoding="utf-8") as f:
             for ts,lvl,msg in self._log_entries: f.write(f"[{ts}] [{lvl.upper()}] {msg}\n")
 
-    # ─── File operations ────────────────────────────────────────────────
     def _add_files(self):
         paths=filedialog.askopenfilenames(title="Add files")
         added=0
@@ -2396,7 +2225,6 @@ class SonarApp(tk.Tk):
         self._q.put(("done",total))
 
     def _quick_check(self,path) -> dict:
-        """Quick check without C-core."""
         r={"path":path,"name":os.path.basename(path),"size":0,"type":"?","status":"ok","issues":[],"details":[]}
         try: r["size"]=os.stat(path).st_size
         except OSError as e: r["status"]="error"; r["issues"].append(str(e)); return r
@@ -2421,14 +2249,13 @@ class SonarApp(tk.Tk):
         sel=self._tree.selection()
         if not sel:
             if not self._file_paths: messagebox.showinfo("Sonar","Add files first."); return
-            # Multi-threaded analysis of all files
             if self._running: return
             self._running=True
             paths=list(self._file_paths)
             self._results=[]
             self._prog.configure(maximum=len(paths)*10,value=0)
-            self._prog_lbl.configure(text="🔬 Deep analysis…")
-            self._log(f"Multi-threaded deep analysis of {len(paths)} files","info")
+            self._prog_lbl.configure(text="Deep analysis…")
+            self._log(f"Multi-threaded deep analysis {len(paths)} files","info")
             threading.Thread(target=self._deep_all_worker,args=(paths,),daemon=True).start()
         else:
             self._start_deep_single(sel[0])
@@ -2436,7 +2263,7 @@ class SonarApp(tk.Tk):
     def _start_deep_single(self,path):
         if self._running: messagebox.showinfo("Sonar","Please wait."); return
         self._running=True; self._prog.configure(maximum=10,value=0)
-        self._prog_lbl.configure(text=f"🔬 {os.path.basename(path)}")
+        self._prog_lbl.configure(text=f"{os.path.basename(path)}")
         self._log(f"Deep analysis: {os.path.basename(path)}","info")
         threading.Thread(target=self._deep_worker,args=(path,),daemon=True).start()
 
@@ -2449,7 +2276,6 @@ class SonarApp(tk.Tk):
         self._q.put(("deep_done",result))
 
     def _deep_all_worker(self,paths):
-        """Multi-threaded — pool of 4 workers."""
         q2=queue.Queue()
         for p in paths: q2.put(p)
         total=len(paths); done_count=[0]
@@ -2472,7 +2298,6 @@ class SonarApp(tk.Tk):
         self._q.put(("deep_all_done",total))
 
     def _deep_analyze(self,path,prog_cb):
-        """Full analysis: everything Sonar can do."""
         steps=["Basic check","CRC-32","Entropy","Nulls/ASCII","Histogram",
                "Metadata","Archive","Steganography","Threats","Report"]
         def step(i,n):
@@ -2497,7 +2322,7 @@ class SonarApp(tk.Tk):
         hist=CORE.histogram(path); total_b=sum(hist)
         top5=sorted(range(256),key=lambda i:hist[i],reverse=True)[:5]
         r["deep"]["histogram"]=hist
-        r["deep"]["top_bytes"]=[{"byte":f"0x{b:02X}","char":chr(b) if 0x20<=b<=0x7E else "·",
+        r["deep"]["top_bytes"]=[{"byte":f"0x{b:02X}","char":chr(b) if 0x20<=b<=0x7E else ".",
                                   "count":hist[b],"pct":round(hist[b]/total_b*100,2) if total_b else 0}
                                  for b in top5]
         step(5,steps[5])
@@ -2522,17 +2347,16 @@ class SonarApp(tk.Tk):
         return r
 
     def _scheduled_scan(self,paths,label):
-        self._log(f"⏰ Scheduler: launch «{label}»","info")
+        self._log(f"Scheduler: launch {label}","info")
         for path in paths:
             if os.path.exists(path):
                 r=self._quick_check(path)
                 self._q.put(("sched_result",r,label))
 
     def _on_file_changed(self,path,event,old_size,new_size):
-        msg=f"File modified: {os.path.basename(path)} ({_fmt(old_size)}→{_fmt(new_size)})" if event=="modified" else f"File deleted: {os.path.basename(path)}"
+        msg=f"File modified: {os.path.basename(path)} ({_fmt(old_size)}->{_fmt(new_size)})" if event=="modified" else f"File deleted: {os.path.basename(path)}"
         self._q.put(("monitor_event",path,event,msg))
 
-    # ─── Queue ──────────────────────────────────────────────────────────
     def _poll_queue(self):
         try:
             while True:
@@ -2545,7 +2369,7 @@ class SonarApp(tk.Tk):
                     self._scan_done(msg[1])
                 elif tag=="dp":
                     _,done,total,name=msg; self._prog.configure(value=done)
-                    self._prog_lbl.configure(text=f"🔬 {name}"); self._set_status(name)
+                    self._prog_lbl.configure(text=f"{name}"); self._set_status(name)
                 elif tag=="deep_done":
                     r=msg[1]; self._update_row(r); self._running=False
                     self._prog_lbl.configure(text="Deep analysis complete")
@@ -2557,27 +2381,26 @@ class SonarApp(tk.Tk):
                         self._log(f"THREAT: {r['name']} — {threat['level'].upper()}",lvl)
                         for r2 in threat.get("reasons",[]): self._log(f"  {r2}",lvl)
                     else:
-                        self._log(f"✓ {r['name']} — clean","ok")
+                        self._log(f"{r['name']} — clean","ok")
                 elif tag=="deep_all_done":
                     n=msg[1]; self._running=False
                     ok=sum(1 for r in self._results if r.get("status")=="ok")
                     err=sum(1 for r in self._results if r.get("status")=="error")
                     self._prog_lbl.configure(text=f"Ready: {n} files")
-                    self._prog_cnt.configure(text=f"✓{ok}  ✗{err}")
+                    self._prog_cnt.configure(text=f"OK:{ok}  ERR:{err}")
                     self._log(f"Multi-threaded analysis complete: {n} files, errors: {err}","ok" if not err else "warn")
                 elif tag=="sched_result":
                     _,r,label=msg; self._update_row(r)
                     if r.get("status")!="ok":
-                        self._log(f"⏰ [{label}] PROBLEM: {r['name']}","warn")
+                        self._log(f"[{label}] PROBLEM: {r['name']}","warn")
                 elif tag=="monitor_event":
-                    _,path,event,msg2=msg; self._log(f"👁 {msg2}","warn")
+                    _,path,event,msg2=msg; self._log(f"{msg2}","warn")
                 elif tag=="mic_result":
                     _,text,log_text,log_tag=msg
-                    self._mic_card["sv"].set(text)
-                    self._mic_card.get("btn_ref") and self._mic_card["btn_ref"].configure(state="normal")
+                    col=self.T["tree_ok"] if log_tag=="ok" else self.T["tree_warn"]
+                    self._tile_status(self._mic_card,f"{'✓' if log_tag=='ok' else '⚠'} {text}",col)
                     self._dev_log_write(log_text,log_tag)
                     self._log(f"Microphone: {log_text}",log_tag)
-                    self._dev_tree.item(self._mic_node,text=f"🎤  Microphone  [{'✓' if log_tag=='ok' else '⚠'} {text}]")
         except queue.Empty: pass
         self.after(80,self._poll_queue)
 
@@ -2588,7 +2411,7 @@ class SonarApp(tk.Tk):
         if deep:
             threat=deep.get("threat",{})
             lvl=threat.get("level","clean")
-            pfx={"clean":"[🔬] ","suspicious":"⚠ ","danger":"🚨 "}[lvl]
+            pfx={"clean":"","suspicious":"WARN ","danger":"DANGER "}[lvl]
             detail=pfx+detail
         tag={"ok":"ok","warn":"warn","error":"err"}.get(r.get("status",""),"pending")
         try:
@@ -2601,7 +2424,7 @@ class SonarApp(tk.Tk):
         warn=sum(1 for r in self._results if r.get("status")=="warn")
         err=sum(1 for r in self._results if r.get("status")=="error")
         self._prog_lbl.configure(text=f"Ready: {total}")
-        self._prog_cnt.configure(text=f"✓{ok}  ⚠{warn}  ✗{err}"+(f"  Damaged: {err}" if err else "  All OK"))
+        self._prog_cnt.configure(text=f"OK:{ok}  WARN:{warn}  ERR:{err}"+(f"  Damaged: {err}" if err else "  All OK"))
         msg=f"Scan: {total} files. OK:{ok} WARN:{warn} ERR:{err}"
         self._set_status(msg); self._log(msg,"ok" if not err else "warn")
 
@@ -2635,7 +2458,7 @@ class SonarApp(tk.Tk):
             with open(p,"w",encoding="utf-8") as f: json.dump(safe,f,ensure_ascii=False,indent=2,default=str)
         else:
             with open(p,"w",encoding="utf-8") as f:
-                f.write(f"SONAR v1.2 Report  {_dt()}\n{'='*70}\n\n")
+                f.write(f"SONAR v1.1 Report  {_dt()}\n{'='*70}\n\n")
                 for r in self._results:
                     s={"ok":"OK","warn":"WARN","error":"DAMAGED"}.get(r.get("status"),"?")
                     f.write(f"[{s}] {r['path']}\n  Type:{r.get('type','?')}  Size:{_fmt(r.get('size',0))}\n")
@@ -2652,29 +2475,36 @@ class SonarApp(tk.Tk):
         self._log(f"Report saved: {p}","ok")
         messagebox.showinfo("Sonar",f"Report saved:\n{p}")
 
-    # ─── Devices ───────────────────────────────────────────────────────
     def _dev_log_write(self,text,tag="info"):
         self._dev_log.configure(state="normal")
         self._dev_log.insert("end",f"[{_ts()}]  {text}\n",tag)
         self._dev_log.see("end"); self._dev_log.configure(state="disabled")
 
+    def _tile_status(self,card,text,color=None):
+        """Update a device tile's status StringVar and colour."""
+        try:
+            card["sv"].set(text)
+            if color and "st_lbl" in card:
+                card["st_lbl"].configure(fg=color)
+        except: pass
+
     def _test_keyboard(self):
         self._kbd_active=True
         self._dev_log_write("Press any key…","info")
-        self._dev_tree.item(self._kbd_node,text="⌨  Keyboard  [⏳ waiting]")
+        self._tile_status(self._kbd_card,"⏳ waiting for key…",self.T["fg2"])
 
     def _on_key(self,event):
         if self._kbd_active:
             self._kbd_active=False
             key=event.keysym
-            self._dev_log_write(f"Keyboard: «{key}» — OK","ok")
-            self._log(f"Keyboard: «{key}»","ok")
-            self._dev_tree.item(self._kbd_node,text=f"⌨  Keyboard  [✓ {key}]")
+            self._dev_log_write(f"Keyboard: {key} — OK","ok")
+            self._log(f"Keyboard: {key}","ok")
+            self._tile_status(self._kbd_card,f"✓ OK  ({key})",self.T["tree_ok"])
 
     def _test_mouse(self):
         self._mouse_active=True
         self._dev_log_write("Click or scroll mouse…","info")
-        self._dev_tree.item(self._mouse_node,text="🖱  Mouse  [⏳ waiting]")
+        self._tile_status(self._mouse_card,"⏳ click or scroll…",self.T["fg2"])
 
     def _on_click(self,event):
         if self._mouse_active:
@@ -2682,17 +2512,17 @@ class SonarApp(tk.Tk):
             btn={1:"Left",2:"Middle",3:"Right"}.get(event.num,f"#{event.num}")
             self._dev_log_write(f"Mouse: {btn} button ({event.x_root},{event.y_root}) — OK","ok")
             self._log(f"Mouse: {btn}","ok")
-            self._dev_tree.item(self._mouse_node,text=f"🖱  Mouse  [✓ {btn}]")
+            self._tile_status(self._mouse_card,f"✓ OK  ({btn} button)",self.T["tree_ok"])
 
     def _on_scroll(self,event):
         if self._mouse_active:
             self._mouse_active=False
             self._dev_log_write("Mouse: scroll wheel — OK","ok")
-            self._dev_tree.item(self._mouse_node,text="🖱  Mouse  [✓ wheel]")
+            self._tile_status(self._mouse_card,"✓ OK  (scroll wheel)",self.T["tree_ok"])
 
     def _test_mic(self):
         self._dev_log_write("Recording 2 sec…","info")
-        self._dev_tree.item(self._mic_node,text="🎤  Microphone  [⏳ record]")
+        self._tile_status(self._mic_card,"⏳ recording…",self.T["fg2"])
         threading.Thread(target=self._mic_worker,daemon=True).start()
 
     def _mic_worker(self):
@@ -2701,7 +2531,7 @@ class SonarApp(tk.Tk):
                 import sounddevice as sd,numpy as np
                 rec=sd.rec(int(2*44100),samplerate=44100,channels=1,dtype='int16'); sd.wait()
                 peak=int(np.abs(rec).max())
-                self._q.put(("mic_result",f"✓ Peak:{peak}" if peak>50 else "⚠ Silent",
+                self._q.put(("mic_result",f"OK Peak:{peak}" if peak>50 else "WARN Silent",
                              f"Mic peak={peak}","ok" if peak>50 else "warn"))
                 return
             except ImportError: pass
@@ -2710,24 +2540,22 @@ class SonarApp(tk.Tk):
                                   capture_output=True,timeout=5)
                 if r.returncode==0 and os.path.exists("/tmp/sonar_mic.wav"):
                     sz=os.path.getsize("/tmp/sonar_mic.wav"); os.remove("/tmp/sonar_mic.wav")
-                    self._q.put(("mic_result","✓ OK" if sz>1000 else "⚠ Silent",f"arecord {sz}b","ok" if sz>1000 else "warn"))
+                    self._q.put(("mic_result","OK" if sz>1000 else "WARN Silent",f"arecord {sz}b","ok" if sz>1000 else "warn"))
                     return
             self._q.put(("mic_result","? Unavailable","pip install sounddevice","warn"))
-        except Exception as e: self._q.put(("mic_result",f"✗ {e}",str(e),"err"))
+        except Exception as e: self._q.put(("mic_result",f"ERR {e}",str(e),"err"))
 
     def _test_speakers(self):
         self._dev_log_write("Speaker Test…","info")
-        self._dev_tree.item(self._spk_node,text="🔊  Speakers  [⏳ test]")
+        self._tile_status(self._spk_card,"⏳ testing…",self.T["fg2"])
         _SpeakerWindow(self)
 
-    # ─── Helpers ──────────────────────────────────────────────────
     def _set_status(self,text):
         try:
             self._status_left.configure(text=f"  {text}")
             self._status_right.configure(text=f"{_ts()}  ")
         except: pass
 
-    # ─── Quick format checks ───────────────────────────────────────
     def _detect_type(self,path):
         SIGS={b'\x89PNG\r\n\x1a\n':'PNG',b'\xff\xd8\xff':'JPEG',b'GIF8':'GIF',
               b'%PDF':'PDF',b'PK\x03\x04':'ZIP/OOXML',b'Rar!':'RAR',b'\x1f\x8b':'GZIP',
@@ -2799,23 +2627,22 @@ class SonarApp(tk.Tk):
             return True,f"OK {_fmt(sz)}"
         except Exception as e: return False,str(e)
 
-    # ─── About ──────────────────────────────────────────────────────
     def _about(self):
         T=self.T
-        win=tk.Toplevel(self); win.title("About — Sonar v1.2")
+        win=tk.Toplevel(self); win.title("About — Sonar v1.1")
         win.geometry("500x460"); win.resizable(False,False); win.configure(bg=T["bg"]); win.grab_set()
         hdr=tk.Frame(win,bg=T["accent"],height=52); hdr.pack(fill="x"); hdr.pack_propagate(False)
-        tk.Label(hdr,text="  🔊 Sonar  v1.2",bg=T["accent"],fg=T["accent_fg"],
+        tk.Label(hdr,text="  Sonar  v1.1",bg=T["accent"],fg=T["accent_fg"],
                  font=("Segoe UI",15,"bold")).pack(side="left",padx=10,pady=8)
         body=tk.Frame(win,bg=T["bg"]); body.pack(fill="both",expand=True,padx=16,pady=8)
         infos=[
             (f"C-core: {'active' if CORE.available else 'Python fallback'}", T["log_ok"] if CORE.available else T["log_warn"]),
-            (f"Virus DB: {len(VDB.signatures)} signatures | PIL: {'✓' if HAS_PIL else '✗'} | Mutagen: {'✓' if HAS_MUTAGEN else '✗'} | psutil: {'✓' if HAS_PSUTIL else '✗'}",T["fg2"]),
+            (f"Virus DB: {len(VDB.signatures)} signatures | PIL: {'yes' if HAS_PIL else 'no'} | Mutagen: {'yes' if HAS_MUTAGEN else 'no'} | psutil: {'yes' if HAS_PSUTIL else 'no'}",T["fg2"]),
             ("",""),
             ("Features:",T["fg"]),
             ("  EXIF / ID3 / PDF / DOCX metadata",T["fg2"]),
             ("  Recursive ZIP/RAR/7z analysis",T["fg2"]),
-            ("  Line-by-line file diff (RMB)",T["fg2"]),
+            ("  Line-by-line file diff",T["fg2"]),
             ("  Damaged header repair",T["fg2"]),
             ("  LSB steganography + Chi² analysis",T["fg2"]),
             ("  Deep scan: virus signatures from JSON",T["fg2"]),
@@ -2823,8 +2650,8 @@ class SonarApp(tk.Tk):
             ("  Devices: display, battery, network, BT, USB",T["fg2"]),
             ("  Real-time file monitoring",T["fg2"]),
             ("  Scheduled scanning",T["fg2"]),
-            ("  Multi-threaded analysis (4 threads)",T["fg2"]),
-            ("  Export: TXT / JSON / HTML (Chart.js)",T["fg2"]),
+            ("  Multi-threaded analysis",T["fg2"]),
+            ("  Export: TXT / JSON / HTML",T["fg2"]),
             ("",""),
             ("F5 — scan  F6 — deep analysis  RMB — context menu",T["fg2"]),
         ]
@@ -2833,9 +2660,9 @@ class SonarApp(tk.Tk):
             else: tk.Label(body,text=txt,bg=T["bg"],fg=col,font=("Consolas",8),anchor="w").pack(fill="x")
         sep=tk.Frame(win,bg=T["sep"],height=1); sep.pack(fill="x",padx=8)
         footer=tk.Frame(win,bg=T["bg"],height=50); footer.pack(fill="x",padx=12,pady=8)
-        github_url="https://github.com"
+        github_url="https://github.com/homaaio/Sonar"
         try:
-            if not HAS_PIL: raise RuntimeError("Pillow not available")
+            from PIL import Image,ImageTk
             icon_path=ASSETS_DIR/"github_icon.png"
             if icon_path.exists():
                 img=Image.open(icon_path).resize((22,22),Image.LANCZOS)
@@ -2845,11 +2672,11 @@ class SonarApp(tk.Tk):
                           bg=T["bg"],fg=T["fg"],relief="flat",cursor="hand2",
                           font=("Segoe UI",9,"underline")).pack(side="left")
             else: raise FileNotFoundError
-        except Exception:
-            tk.Button(footer,text="⚫ GitHub →",command=lambda:webbrowser.open(github_url),
+        except:
+            tk.Button(footer,text="GitHub",command=lambda:webbrowser.open(github_url),
                       bg=T["bg"],fg="#6E40C9",relief="flat",cursor="hand2",
                       font=("Segoe UI",10,"underline")).pack(side="left")
-        tk.Label(footer,text="© 2025 Sonar  MIT",bg=T["bg"],fg=T["fg2"],font=("Segoe UI",8)).pack(side="right")
+        tk.Label(footer,text="© 2026 Sonar  MIT",bg=T["bg"],fg=T["fg2"],font=("Segoe UI",8)).pack(side="right")
         tk.Button(win,text="  OK  ",command=win.destroy,font=("Segoe UI",9),
                   bg=T["toolbar"],fg=T["fg"],relief="groove",cursor="hand2").pack(pady=(0,8))
 
@@ -2859,4 +2686,6 @@ def main():
     app.mainloop()
 
 if __name__=="__main__":
+    # Usage: python sonar.py [file1 file2 ...]
+    # Works as "Open with" target — the file is loaded immediately on startup.
     main()
