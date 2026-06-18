@@ -1223,6 +1223,7 @@ class _ArchiveViewWindow(tk.Toplevel):
         self.after(0,self._populate,result,path)
 
     def _populate(self,result,path):
+        if not self.winfo_exists(): return
         stats=result.get("stats",{})
         root_id=self._tree.insert("","end",text=f"{os.path.basename(path)}",
                                    values=(stats.get("uncompressed","?"),"ZIP",""),open=True)
@@ -1314,6 +1315,7 @@ class _MetaWindow(tk.Toplevel):
         self.after(0,self._populate,meta)
 
     def _populate(self,meta):
+        if not self.winfo_exists(): return
         fmt=meta.pop("format","Metadata")
         root=self._tree.insert("","end",text=fmt,open=True)
         if not meta or (len(meta)==1 and "error" in meta):
@@ -1347,6 +1349,7 @@ class _StegoWindow(tk.Toplevel):
         self.after(0,self._show,r)
 
     def _show(self,r):
+        if not self.winfo_exists(): return
         t=self._txt; t.configure(state="normal"); t.delete("1.0","end")
         if "error" in r:
             t.insert("end",f"Error: {r['error']}\n","err"); t.configure(state="disabled"); return
@@ -1410,6 +1413,7 @@ class _ProcessWindow(tk.Toplevel):
         self.after(0,self._populate,procs,runs)
 
     def _populate(self,procs,runs):
+        if not self.winfo_exists(): return
         for p in procs:
             if "error" in p: continue
             flag="SUSPICIOUS" if p.get("suspicious") else ""
@@ -1454,11 +1458,13 @@ class _NetworkWindow(tk.Toplevel):
         self.after(0,self._done,r)
 
     def _log(self,msg):
+        if not self.winfo_exists(): return
         self._txt.configure(state="normal")
         self._txt.insert("end",f"  {msg}\n","ok")
         self._txt.see("end"); self._txt.configure(state="disabled")
 
     def _done(self,r):
+        if not self.winfo_exists(): return
         self._prog.stop(); self._btn.configure(state="normal")
         self._txt.configure(state="normal")
         self._txt.insert("end","\n  --- Summary ---\n","key")
@@ -1490,6 +1496,7 @@ class _BatteryWindow(tk.Toplevel):
         self.after(0,self._show,r)
 
     def _show(self,r):
+        if not self.winfo_exists(): return
         t=self._txt; t.configure(state="normal"); t.delete("1.0","end")
         def kv(k,v,tag="val"): t.insert("end",f"  {k:<22}","key"); t.insert("end",f"{v}\n",tag)
         if not r.get("available"):
@@ -1534,10 +1541,12 @@ class _BTWindow(tk.Toplevel):
         self.after(0,self._done,r)
 
     def _log(self,msg,tag="info"):
+        if not self.winfo_exists(): return
         self._txt.configure(state="normal")
         self._txt.insert("end",f"  {msg}\n",tag); self._txt.see("end"); self._txt.configure(state="disabled")
 
     def _done(self,r):
+        if not self.winfo_exists(): return
         self._prog.stop(); self._btn.configure(state="normal")
         self._log(f"Devices found: {len(r['devices'])}","ok")
         for d in r["devices"]:
@@ -1567,6 +1576,7 @@ class _USBWindow(tk.Toplevel):
         self.after(0,self._populate,devs)
 
     def _populate(self,devs):
+        if not self.winfo_exists(): return
         for d in devs:
             self._tree.insert("","end",
                 values=(d.get("bus",""),d.get("dev",""),d.get("id",""),d.get("name","?")))
@@ -1856,15 +1866,39 @@ class SonarApp(tk.Tk):
 
     def _build_files_tab(self,parent):
         T=self.T
+
+        # ── search bar ────────────────────────────────────────────────────────
+        sf=tk.Frame(parent,bg=T["toolbar"],height=28); sf.pack(fill="x"); sf.pack_propagate(False)
+        tk.Label(sf,text="  🔍 Filter:",bg=T["toolbar"],fg=T["fg"],font=("Segoe UI",8)).pack(side="left",pady=4)
+        self._search_var=tk.StringVar()
+        self._search_var.trace_add("write",lambda *_:self._apply_filter())
+        se=tk.Entry(sf,textvariable=self._search_var,font=("Segoe UI",8),
+                    bg=T["detail_bg"],fg=T["fg"],relief="sunken",bd=1,width=28)
+        se.pack(side="left",padx=4,pady=4)
+        tk.Button(sf,text="✕",command=lambda:(self._search_var.set(""),se.focus_set()),
+                  bg=T["toolbar"],fg=T["fg2"],relief="flat",font=("Segoe UI",8),cursor="hand2",
+                  bd=0).pack(side="left",pady=4)
+        # filter status counter
+        self._filter_lbl=tk.Label(sf,text="",bg=T["toolbar"],fg=T["fg2"],font=("Segoe UI",7))
+        self._filter_lbl.pack(side="left",padx=8)
+
         pane=tk.PanedWindow(parent,orient="horizontal",sashwidth=5,bg=T["pane_sash"],handlesize=0)
         pane.pack(fill="both",expand=True)
 
         left=tk.Frame(pane,bg=T["bg"]); pane.add(left,width=720)
         cols=("st","name","type","size","detail")
         self._tree=ttk.Treeview(left,columns=cols,show="headings",selectmode="browse")
-        for c,w,t,a in (("st",26,"","center"),("name",220,"File","w"),("type",90,"Type","center"),
-                        ("size",80,"Size","e"),("detail",380,"Result","w")):
-            self._tree.heading(c,text=t,anchor=a); self._tree.column(c,width=w,anchor=a)
+
+        # sortable headings
+        self._sort_col=None; self._sort_rev=False
+        for c,w,t,a in (("st",26,"","center"),("name",220,"File ↕","w"),("type",90,"Type ↕","center"),
+                        ("size",80,"Size ↕","e"),("detail",380,"Result","w")):
+            if c!="st":
+                self._tree.heading(c,text=t,anchor=a,command=(lambda col=c: self._sort_by(col)))
+            else:
+                self._tree.heading(c,text=t,anchor=a)
+            self._tree.column(c,width=w,anchor=a)
+
         self._tree.tag_configure("ok",   foreground=T["tree_ok"])
         self._tree.tag_configure("warn", foreground=T["tree_warn"])
         self._tree.tag_configure("err",  foreground=T["tree_err"])
@@ -1877,6 +1911,8 @@ class SonarApp(tk.Tk):
         self._tree.bind("<Double-1>",    lambda e:self._show_details())
         self._tree.bind("<<TreeviewSelect>>",self._on_sel)
         self._tree.bind("<Button-3>",    self._context_menu)
+        self._tree.bind("<Delete>",      lambda e:self._delete_selected())
+        self._tree.bind("<BackSpace>",   lambda e:self._delete_selected())
 
         try:
             self._tree.drop_target_register("DND_Files")
@@ -1898,6 +1934,67 @@ class SonarApp(tk.Tk):
         self._prog_lbl.pack(side="left")
         self._prog_cnt=tk.Label(prog,text="",bg=T["bg"],fg=T["fg"],font=("Segoe UI",8))
         self._prog_cnt.pack(side="right")
+
+    def _apply_filter(self):
+        """Show/hide rows based on search text."""
+        q=self._search_var.get().lower().strip()
+        all_ids=self._file_paths
+        shown=0
+        for path in all_ids:
+            try:
+                if not q or q in path.lower() or q in os.path.basename(path).lower():
+                    self._tree.reattach(path,"",tk.END)
+                    shown+=1
+                else:
+                    self._tree.detach(path)
+            except: pass
+        total=len(all_ids)
+        self._filter_lbl.configure(
+            text=(f"Showing {shown}/{total}" if q else ""),
+            fg=self.T["tree_warn"] if shown<total else self.T["fg2"])
+
+    def _sort_by(self,col):
+        """Sort tree by column; toggle direction on repeat click."""
+        if self._sort_col==col:
+            self._sort_rev=not self._sort_rev
+        else:
+            self._sort_col=col; self._sort_rev=False
+
+        # collect (value, iid) pairs
+        data=[]
+        for iid in self._tree.get_children():
+            vals=self._tree.item(iid,"values")
+            col_idx={"st":0,"name":1,"type":2,"size":3,"detail":4}.get(col,1)
+            raw=vals[col_idx] if vals and len(vals)>col_idx else ""
+            # numeric sort for size
+            if col=="size":
+                try:
+                    num=float(raw.split()[0]); unit=raw.split()[1] if len(raw.split())>1 else ""
+                    mult={"B":1,"KB":1024,"MB":1024**2,"GB":1024**3,"TB":1024**4}.get(unit,1)
+                    key=num*mult
+                except: key=0.0
+            else:
+                key=raw.lower()
+            data.append((key,iid))
+
+        data.sort(key=lambda x:x[0],reverse=self._sort_rev)
+        for idx,(_, iid) in enumerate(data):
+            self._tree.move(iid,"",idx)
+
+        # update heading arrows
+        arrow_up="▲"; arrow_dn="▼"
+        labels={"name":"File","type":"Type","size":"Size","detail":"Result"}
+        for c,lbl in labels.items():
+            if c==col:
+                arrow=arrow_dn if self._sort_rev else arrow_up
+                self._tree.heading(c,text=f"{lbl} {arrow}")
+            else:
+                self._tree.heading(c,text=f"{lbl} ↕")
+
+    def _delete_selected(self):
+        """Delete key handler — remove selected file from list."""
+        sel=self._tree.selection()
+        if sel: self._remove_file(sel[0])
 
     def _context_menu(self,event):
         sel=self._tree.identify_row(event.y)
@@ -1930,6 +2027,8 @@ class SonarApp(tk.Tk):
         menu.add_command(label=monitor_lbl,command=toggle_mon)
         menu.add_separator()
         menu.add_command(label="Copy path",command=lambda:(self.clipboard_clear(),self.clipboard_append(path)))
+        menu.add_separator()
+        menu.add_command(label="Remove from list",command=lambda:self._remove_file(path))
         menu.post(event.x_root,event.y_root)
 
     def _on_drop(self,event):
@@ -2201,6 +2300,16 @@ class SonarApp(tk.Tk):
         msg=f"Added from folder: {added} file(s)"
         self._set_status(msg); self._log(msg,"info")
 
+    def _remove_file(self,path):
+        try: self._tree.delete(path)
+        except: pass
+        if path in self._file_paths: self._file_paths.remove(path)
+        self._results=[r for r in self._results if r["path"]!=path]
+        if path in self._monitor._watching:
+            self._monitor.remove(path)
+        msg=f"Removed: {os.path.basename(path)}"
+        self._set_status(msg); self._log(msg,"info")
+
     def _insert_pending(self,path):
         name=os.path.basename(path)
         size=_fmt(os.path.getsize(path)) if os.path.exists(path) else "—"
@@ -2209,18 +2318,27 @@ class SonarApp(tk.Tk):
     def _start_scan(self):
         if self._running: messagebox.showinfo("Sonar","Please wait for current operation."); return
         if not self._file_paths: messagebox.showinfo("Sonar","Add files first."); return
-        self._running=True; self._results=[]
-        self._prog.configure(maximum=len(self._file_paths),value=0)
-        self._prog_lbl.configure(text="Scan…")
-        self._prog_cnt.configure(text="")
-        self._log(f"Scan {len(self._file_paths)} files…","info")
-        threading.Thread(target=self._scan_worker,daemon=True).start()
+        # only scan files that haven't been checked yet
+        checked={r["path"] for r in self._results}
+        to_scan=[p for p in self._file_paths if p not in checked]
+        if not to_scan:
+            messagebox.showinfo("Sonar","All files already scanned.\nUse Clear to reset, or add new files.")
+            return
+        self._running=True
+        self._prog.configure(maximum=len(to_scan),value=0)
+        self._prog_lbl.configure(text="Scan…"); self._prog_cnt.configure(text="")
+        self._log(f"Scanning {len(to_scan)} new file(s) ({len(self._file_paths)-len(to_scan)} already checked)…","info")
+        threading.Thread(target=self._scan_worker,args=(to_scan,),daemon=True).start()
 
-    def _scan_worker(self):
-        total=len(self._file_paths)
-        for i,path in enumerate(self._file_paths):
+    def _scan_worker(self,paths=None):
+        if paths is None: paths=self._file_paths
+        total=len(paths)
+        for i,path in enumerate(paths):
             result=self._quick_check(path)
-            self._results.append(result)
+            # merge into results (don't duplicate)
+            existing=next((r for r in self._results if r["path"]==path),None)
+            if existing: existing.update(result)
+            else: self._results.append(result)
             self._q.put(("result",i+1,total,result))
         self._q.put(("done",total))
 
@@ -2427,6 +2545,21 @@ class SonarApp(tk.Tk):
         self._prog_cnt.configure(text=f"OK:{ok}  WARN:{warn}  ERR:{err}"+(f"  Damaged: {err}" if err else "  All OK"))
         msg=f"Scan: {total} files. OK:{ok} WARN:{warn} ERR:{err}"
         self._set_status(msg); self._log(msg,"ok" if not err else "warn")
+        self._show_scan_toast(total,ok,warn,err)
+
+    def _show_scan_toast(self,total,ok,warn,err):
+        """Briefly show a summary banner at the top of the window."""
+        T=self.T
+        if err:   bg,icon="#D13438","✗  Errors found"
+        elif warn: bg,icon="#C19C00","⚠  Warnings"
+        else:      bg,icon="#107C10","✓  All OK"
+        toast=tk.Frame(self,bg=bg,height=32); toast.place(relx=0,rely=0,relwidth=1)
+        toast.pack_propagate(False)
+        tk.Label(toast,text=f"  {icon}   {total} files scanned  —  {ok} OK  {warn} warnings  {err} errors",
+                 bg=bg,fg="white",font=("Segoe UI",9,"bold")).pack(side="left",padx=12,pady=5)
+        tk.Button(toast,text="✕",command=toast.destroy,bg=bg,fg="white",
+                  relief="flat",font=("Segoe UI",9),cursor="hand2",bd=0).pack(side="right",padx=8)
+        self.after(6000,lambda:toast.destroy() if toast.winfo_exists() else None)
 
     def _clear(self):
         if self._running: messagebox.showinfo("Sonar","Please wait."); return
