@@ -902,7 +902,7 @@ class DeviceTester:
             r["details"].append(msg)
             if progress_cb: progress_cb(msg)
 
-        step("Проверка сетевых интерфейсов…")
+        step("Checking network interfaces…")
         active_iface=None
         if HAS_PSUTIL:
             try:
@@ -913,22 +913,22 @@ class DeviceTester:
                     ips=[a.address for a in addr_list if a.family==socket.AF_INET]
                     if stat.isup and ips and not ips[0].startswith("127."):
                         r["interfaces"].append({"name":iface,"ip":ips[0],"speed":stat.speed})
-                        step(f"Интерфейс: {iface} — {ips[0]} ({stat.speed} Mbps)")
+                        step(f"Interface: {iface} — {ips[0]} ({stat.speed} Mbps)")
                         if not active_iface: active_iface=iface
             except: pass
         if not r["interfaces"]:
-            step("⚠ Активные сетевые интерфейсы не найдены")
+            step("⚠ No active network interfaces found")
 
-        step("Проверка шлюза по умолчанию…")
+        step("Checking default gateway…")
         gw=self._default_gateway()
         if gw:
             gres=self._ping_host(gw,count=2,timeout_s=5)
             r["gateway_ok"]=gres["ok"]
-            step(f"Шлюз {gw}: {'OK ('+str(gres['ping_ms'])+' ms)' if gres['ok'] else 'нет ответа'}")
+            step(f"Gateway {gw}: {'OK ('+str(gres['ping_ms'])+' ms)' if gres['ok'] else 'no response'}")
         else:
-            step("Шлюз не определён")
+            step("Gateway not detected")
 
-        step("Проверка интернет-соединения (ping)…")
+        step("Checking internet connection (ping)…")
         for host in ("8.8.8.8","1.1.1.1","77.88.8.8"):
             pres=self._ping_host(host,count=4,timeout_s=8)
             if pres["packet_loss"] is not None and r["packet_loss"] is None:
@@ -937,23 +937,23 @@ class DeviceTester:
                 r["ping_ms"]=pres["ping_ms"]; r["ping_host"]=host
                 r["packet_loss"]=pres["packet_loss"] if pres["packet_loss"] is not None else 0
                 r["internet_ok"]=True
-                step(f"Ping {host}: {r['ping_ms']} ms, потери {r['packet_loss']}%")
+                step(f"Ping {host}: {r['ping_ms']} ms, loss {r['packet_loss']}%")
                 break
             else:
-                step(f"Ping {host}: нет ответа")
+                step(f"Ping {host}: no response")
 
-        step("Проверка DNS…")
+        step("Checking DNS…")
         try:
             socket.setdefaulttimeout(4)
             socket.gethostbyname("ya.ru")
             r["dns_ok"]=True; step("DNS: OK")
         except Exception:
-            r["dns_ok"]=False; step("DNS: не отвечает")
+            r["dns_ok"]=False; step("DNS: not responding")
         finally:
             socket.setdefaulttimeout(None)
 
         if r["internet_ok"]:
-            step("Тест скорости загрузки (HTTP)…")
+            step("Download speed test (HTTP)…")
             try:
                 import urllib.request, time as _t
                 url="http://speedtest.tele2.net/1MB.zip"
@@ -963,9 +963,9 @@ class DeviceTester:
                 elapsed=_t.time()-start
                 if elapsed>0:
                     r["download_mbps"]=round(data_len*8/elapsed/1_000_000,2)
-                    step(f"Скорость загрузки: {r['download_mbps']} Mbps")
+                    step(f"Download speed: {r['download_mbps']} Mbps")
             except Exception as e:
-                step(f"Тест скорости недоступен: {e}")
+                step(f"Speed test unavailable: {e}")
 
         if not r["interfaces"]:
             r["status"]="no_adapter"
@@ -979,7 +979,7 @@ class DeviceTester:
             r["status"]="unstable"
         else:
             r["status"]="ok"
-        step(f"Статус соединения: {r['status']}")
+        step(f"Connection status: {r['status']}")
         return r
 
     def _default_gateway(self):
@@ -1018,7 +1018,7 @@ class DeviceTester:
                 pr=subprocess.run(cmd,capture_output=True,text=True,timeout=timeout)
                 ok=pr.returncode==0
                 lines=(pr.stdout or pr.stderr or "").strip().splitlines()
-                detail=lines[-1] if lines else ("OK" if ok else "ошибка")
+                detail=lines[-1] if lines else ("OK" if ok else "error")
                 result["actions"][-1]=(label,ok,detail)
                 if progress_cb: progress_cb(f"{'✓' if ok else '✗'} {label}: {detail}")
                 return ok
@@ -1029,29 +1029,29 @@ class DeviceTester:
 
         system=platform.system()
         if system=="Windows":
-            step("Сброс Winsock…");          run(["netsh","winsock","reset"],"netsh winsock reset")
-            step("Сброс TCP/IP стека…");      run(["netsh","int","ip","reset"],"netsh int ip reset")
-            step("Освобождение IP-адреса…");  run(["ipconfig","/release"],"ipconfig /release")
-            step("Обновление IP-адреса…");    run(["ipconfig","/renew"],"ipconfig /renew")
-            step("Очистка кэша DNS…");        run(["ipconfig","/flushdns"],"ipconfig /flushdns")
+            step("Resetting Winsock…");          run(["netsh","winsock","reset"],"netsh winsock reset")
+            step("Resetting TCP/IP stack…");      run(["netsh","int","ip","reset"],"netsh int ip reset")
+            step("Releasing IP address…");  run(["ipconfig","/release"],"ipconfig /release")
+            step("Renewing IP address…");    run(["ipconfig","/renew"],"ipconfig /renew")
+            step("Flushing DNS cache…");        run(["ipconfig","/flushdns"],"ipconfig /flushdns")
         elif system=="Darwin":
-            step("Очистка кэша DNS…")
+            step("Flushing DNS cache…")
             run(["sudo","killall","-HUP","mDNSResponder"],"flush DNS (mDNSResponder)")
             try:
                 svc=subprocess.check_output(["bash","-c",
                     "networksetup -listallnetworkservices | tail -n +2 | head -1"],
                     timeout=5,text=True).strip()
                 if svc:
-                    step(f"Перезапуск адаптера ({svc})…")
+                    step(f"Restarting adapter ({svc})…")
                     run(["networksetup","-setnetworkserviceenabled",svc,"off"],f"{svc} off")
                     time.sleep(2)
                     run(["networksetup","-setnetworkserviceenabled",svc,"on"],f"{svc} on")
             except Exception: pass
         else:  # Linux
-            step("Очистка кэша DNS…")
+            step("Flushing DNS cache…")
             if not run(["systemd-resolve","--flush-caches"],"systemd-resolve --flush-caches",timeout=10):
                 run(["resolvectl","flush-caches"],"resolvectl flush-caches",timeout=10)
-            step("Перезапуск NetworkManager / интерфейса…")
+            step("Restarting NetworkManager / interface…")
             run(["nmcli","networking","off"],"nmcli networking off",timeout=10)
             run(["nmcli","networking","on"],"nmcli networking on",timeout=10)
             run(["systemctl","restart","NetworkManager"],"restart NetworkManager",timeout=15)
@@ -1063,7 +1063,7 @@ class DeviceTester:
                     run(["dhclient",main_if],f"dhclient {main_if}",timeout=15)
             except Exception: pass
 
-        if progress_cb: progress_cb("Повторная проверка соединения…")
+        if progress_cb: progress_cb("Re-checking connection…")
         time.sleep(1.5)
         result["retest"]=self.network_test(progress_cb=progress_cb)
         return result
@@ -1712,13 +1712,13 @@ class _ProcessWindow(tk.Toplevel):
 class _NetworkWindow(tk.Toplevel):
     """Network test + repair."""
     _STATUS_TEXT={
-        "ok":         ("✓ Соединение в норме","ok"),
-        "unstable":   ("⚠ Соединение нестабильно (большие потери пакетов)","warn"),
-        "no_dns":     ("⚠ Интернет есть, но DNS не отвечает","warn"),
-        "no_internet":("✗ Нет интернета (нет ответа от внешних серверов)","err"),
-        "no_gateway": ("✗ Нет связи с роутером / шлюзом","err"),
-        "no_adapter": ("✗ Активный сетевой адаптер не найден","err"),
-        "unknown":    ("? Статус неизвестен","warn"),
+        "ok":         ("✓ Connection is healthy","ok"),
+        "unstable":   ("⚠ Connection unstable (high packet loss)","warn"),
+        "no_dns":     ("⚠ Internet works, but DNS is not responding","warn"),
+        "no_internet":("✗ No internet (no response from external servers)","err"),
+        "no_gateway": ("✗ No connection to router / gateway","err"),
+        "no_adapter": ("✗ No active network adapter found","err"),
+        "unknown":    ("? Status unknown","warn"),
     }
 
     def __init__(self,parent):
@@ -1730,7 +1730,7 @@ class _NetworkWindow(tk.Toplevel):
         tk.Label(hdr,text="  📡 Network Diagnostics",bg="#264F78",fg="white",
                  font=("Segoe UI",9,"bold")).pack(side="left",padx=8,pady=4)
 
-        self._status_var=tk.StringVar(value="Нажмите «Проверить», чтобы начать")
+        self._status_var=tk.StringVar(value="Click \u201cCheck\u201d to start")
         self._status_lbl=tk.Label(self,textvariable=self._status_var,bg="#FFFFFF",
                                    font=("Segoe UI",10,"bold"),anchor="w",padx=10,pady=4)
         self._status_lbl.pack(fill="x")
@@ -1745,10 +1745,10 @@ class _NetworkWindow(tk.Toplevel):
         self._txt.tag_configure("key",  foreground="#1565C0",font=("Consolas",9,"bold"))
 
         btnrow=tk.Frame(self,bg="#FFFFFF"); btnrow.pack(pady=6)
-        self._btn=tk.Button(btnrow,text="▶ Проверить",command=self._start,
+        self._btn=tk.Button(btnrow,text="▶ Check",command=self._start,
                       bg="#264F78",fg="white",font=("Segoe UI",9),relief="flat",cursor="hand2",width=16)
         self._btn.pack(side="left",padx=4)
-        self._fix_btn=tk.Button(btnrow,text="🔧 Попытка починить",command=self._start_repair,
+        self._fix_btn=tk.Button(btnrow,text="🔧 Try to fix",command=self._start_repair,
                       bg="#B8860B",fg="white",font=("Segoe UI",9),relief="flat",cursor="hand2",
                       width=20,state="disabled")
         self._fix_btn.pack(side="left",padx=4)
@@ -1756,7 +1756,7 @@ class _NetworkWindow(tk.Toplevel):
     def _start(self):
         self._btn.configure(state="disabled"); self._fix_btn.configure(state="disabled")
         self._prog.start(8)
-        self._status_var.set("Проверка…")
+        self._status_var.set("Checking…")
         self._txt.configure(state="normal"); self._txt.delete("1.0","end"); self._txt.configure(state="disabled")
         threading.Thread(target=self._run,daemon=True).start()
 
@@ -1766,7 +1766,7 @@ class _NetworkWindow(tk.Toplevel):
 
     def _log(self,msg,tag=None):
         if tag is None:
-            tag="err" if ("✗" in msg or "не отвечает" in msg or "нет ответа" in msg) else \
+            tag="err" if ("✗" in msg or "not responding" in msg or "no response" in msg) else \
                 ("warn" if "⚠" in msg else "ok")
         self._txt.configure(state="normal")
         self._txt.insert("end",f"  {msg}\n",tag)
@@ -1782,30 +1782,30 @@ class _NetworkWindow(tk.Toplevel):
         self._fix_btn.configure(state=("normal" if r["status"]!="ok" else "disabled"))
 
         self._txt.configure(state="normal")
-        self._txt.insert("end","\n  ─── Итог ───\n","key")
+        self._txt.insert("end","\n  ─── Summary ───\n","key")
         kv=lambda k,v,t="ok": (self._txt.insert("end",f"  {k:<22}","key"),self._txt.insert("end",f"{v}\n",t))
-        kv("Ping:",        f"{r['ping_ms']} ms ({r['ping_host']})" if r['ping_ms'] else "нет ответа",
+        kv("Ping:",        f"{r['ping_ms']} ms ({r['ping_host']})" if r['ping_ms'] else "no response",
            "ok" if r['ping_ms'] else "err")
-        kv("Потери пакетов:", f"{r['packet_loss']}%" if r['packet_loss'] is not None else "—",
+        kv("Packet loss:", f"{r['packet_loss']}%" if r['packet_loss'] is not None else "—",
            "ok" if (r['packet_loss'] or 0)<10 else "warn")
-        kv("Шлюз:",        "OK" if r['gateway_ok'] else ("нет ответа" if r['gateway_ok'] is False else "—"),
+        kv("Gateway:",        "OK" if r['gateway_ok'] else ("no response" if r['gateway_ok'] is False else "—"),
            "ok" if r['gateway_ok'] else "err")
-        kv("DNS:",         "OK" if r['dns_ok'] else ("не отвечает" if r['dns_ok'] is False else "—"),
+        kv("DNS:",         "OK" if r['dns_ok'] else ("not responding" if r['dns_ok'] is False else "—"),
            "ok" if r['dns_ok'] else "err")
         kv("Download:",    f"{r['download_mbps']} Mbps" if r['download_mbps'] else "—")
         self._txt.configure(state="disabled")
 
     def _start_repair(self):
-        if not messagebox.askyesno("Попытка починить",
-                "Будет выполнен сброс сетевых настроек (DNS, IP, Winsock/адаптер).\n"
-                "Это может на несколько секунд прервать соединение. Продолжить?",
+        if not messagebox.askyesno("Try to fix",
+                "This will reset network settings (DNS, IP, Winsock/adapter).\n"
+                "It may briefly interrupt the connection. Continue?",
                 parent=self):
             return
         self._btn.configure(state="disabled"); self._fix_btn.configure(state="disabled")
         self._prog.start(8)
-        self._status_var.set("Выполняется попытка починить соединение…")
+        self._status_var.set("Attempting to fix the connection…")
         self._txt.configure(state="normal")
-        self._txt.insert("end","\n  ─── 🔧 Попытка починить ───\n","key")
+        self._txt.insert("end","\n  ─── 🔧 Try to fix ───\n","key")
         self._txt.configure(state="disabled")
         threading.Thread(target=self._run_repair,daemon=True).start()
 
@@ -1816,7 +1816,7 @@ class _NetworkWindow(tk.Toplevel):
     def _repair_done(self,res):
         ok_count=sum(1 for _,ok,_ in res["actions"] if ok)
         total=len([a for a in res["actions"] if a[1] is not None])
-        self._log(f"Готово: {ok_count}/{total} действий выполнено успешно","ok")
+        self._log(f"Done: {ok_count}/{total} actions completed successfully","ok")
         self._done(res["retest"])
 
 
@@ -2541,10 +2541,10 @@ class SonarApp(tk.Tk):
         menu=tk.Menu(self,tearoff=0,bg=T["bg2"],fg=T["fg"],
                      activebackground=T["accent"],activeforeground=T["accent_fg"])
         if node==self._net_node:
-            menu.add_command(label="🔍 Проверить интернет",command=lambda:_NetworkWindow(self))
-            menu.add_command(label="🔧 Попытка починить",command=lambda:self._repair_network_quick())
+            menu.add_command(label="🔍 Check internet",command=lambda:_NetworkWindow(self))
+            menu.add_command(label="🔧 Try to fix",command=lambda:self._repair_network_quick())
         else:
-            menu.add_command(label="🔍 Тест",command=lambda:self._dev_tree_action_for(node))
+            menu.add_command(label="🔍 Test",command=lambda:self._dev_tree_action_for(node))
         try:
             menu.tk_popup(event.x_root,event.y_root)
         finally:
@@ -2556,8 +2556,8 @@ class SonarApp(tk.Tk):
         self._dev_tree_action(None)
 
     def _repair_network_quick(self):
-        """Devices -> Интернет -> ПКМ -> Попытка починить (без открытия отдельного окна)."""
-        self._dev_log_write("Сеть: запущена попытка починить соединение…","info")
+        """Devices -> Internet -> RMB -> Try to fix (without opening a separate window)."""
+        self._dev_log_write("Network: attempting to fix the connection…","info")
         self._dev_tree.item(self._net_node,text="📡  Wi-Fi / Network  [⏳ fixing]")
         threading.Thread(target=self._repair_network_worker,daemon=True).start()
 
@@ -2862,7 +2862,7 @@ class SonarApp(tk.Tk):
                     status=retest.get("status","unknown")
                     is_ok=status=="ok"
                     self._dev_log_write(
-                        f"Сеть: попытка починить завершена ({ok_count}/{total} действий) — статус: {status}",
+                        f"Network: fix attempt complete ({ok_count}/{total} actions) — status: {status}",
                         "ok" if is_ok else "warn")
                     self._log(f"Network repair: {ok_count}/{total} actions, status={status}","ok" if is_ok else "warn")
                     ping=retest.get("ping_ms")
